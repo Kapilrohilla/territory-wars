@@ -86,6 +86,7 @@ export function spawnPlayer(world: World, p: Player, rng: () => number): boolean
     p.targetHeading = heading;
     p.land = startLand(c);
     p.trail = [];
+    p.burn = null;
     p.deathTime = null;
     p.respawnAt = null;
     return true;
@@ -107,6 +108,7 @@ function newPlayer(id: number, name: string, colorIndex: number, isHuman: boolea
     deathTime: null,
     respawnAt: null,
     dyingLand: null,
+    burn: null,
   };
 }
 
@@ -167,6 +169,7 @@ function capture(world: World, p: Player, pending: Map<number, number | null>) {
   const newLand = captureLand(oldLand, p.trail, nearWall ? ARENA_POLY : undefined);
   p.land = newLand;
   p.trail = [];
+  p.burn = null; // made it home: the burn is cancelled
   const box = bbox(newLand);
   // Only the newly gained region is lethal; enemies crossing old land are unaffected.
   const region = subtractLand(newLand, oldLand);
@@ -228,24 +231,77 @@ function advance(world: World, p: Player, input: Input | undefined, pending: Map
     capture(world, p, pending);
   } else if (p.trail.length > 0) {
     p.trail = [];
+    p.burn = null;
   }
 }
 
-/** Does a's head segment cross b's trail (dangerous part only when a === b)? */
-function hitsTrail(a: Player, b: Player): boolean {
-  const t = b.trail;
-  if (t.length === 0) return false;
-  const p0 = a.prevPos, p1 = a.pos;
-  if (a !== b) {
-    if (segIntersect(p0, p1, t[t.length - 1], b.pos)) return true;
-    for (let i = 0; i + 1 < t.length; i++) if (segIntersect(p0, p1, t[i], t[i + 1])) return true;
-    return false;
+/** Path length of p's trail: cumulative distance along trail[0..n] plus the live tail to pos. */
+export function trailLength(p: Player): number {
+  const t = p.trail;
+  if (t.length === 0) return 0;
+  let s = 0;
+  for (let i = 0; i + 1 < t.length; i++) s += dist(t[i], t[i + 1]);
+  return s + dist(t[t.length - 1], p.pos);
+}
+
+/** Is the trail piece spanning path lengths [s0, s1] burnt? Partial overlap counts by midpoint. */
+function isBurnt(p: Player, s0: number, s1: number): boolean {
+  const b = p.burn;
+  if (!b) return false;
+  const m = (s0 + s1) / 2;
+  return m >= b.back && m <= b.front;
+}
+
+/** Path length along segment a→b (starting at sa) of the point nearest q. */
+function lengthAt(q: Vec, a: Vec, b: Vec, sa: number): number {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const l2 = dx * dx + dy * dy;
+  const k = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.y - a.y) * dy) / l2));
+  return sa + k * Math.sqrt(l2);
+}
+
+/** Spreads every burn by BURN_SPEED·DT both ways; a burn that reaches the head kills. */
+function advanceBurns(alive: Player[], pending: Map<number, number | null>) {
+  const d = CONFIG.BURN_SPEED * CONFIG.DT;
+  for (const p of alive) {
+    const b = p.burn;
+    if (!b) continue;
+    const len = trailLength(p);
+    b.back = Math.max(0, b.back - d);
+    b.front = Math.min(len, b.front + d);
+    if (b.front >= len - 1e-9) markDead(pending, p.id, b.killerId);
   }
-  // Own trail: skip the live tail and the last SELF_SAFE_LEN of path length.
-  let acc = dist(a.pos, t[t.length - 1]);
+}
+
+/**
+ * Where a's head segment crosses b's rival trail, as a path length along it, or null.
+ * A trail that is already burning is ignored: the first hitter keeps the credit.
+ */
+function trailHitAt(a: Player, b: Player): number | null {
+  const t = b.trail;
+  if (t.length === 0 || b.burn) return null;
+  const p0 = a.prevPos, p1 = a.pos;
+  let s = 0;
+  for (let i = 0; i < t.length; i++) {
+    const end = i + 1 < t.length ? t[i + 1] : b.pos;
+    if (segIntersect(p0, p1, t[i], end)) return lengthAt(p1, t[i], end, s);
+    s += dist(t[i], end);
+  }
+  return null;
+}
+
+/** Does p's head segment cross the dangerous part of its own trail? */
+function hitsOwnTrail(p: Player): boolean {
+  const t = p.trail;
+  if (t.length === 0) return false;
+  const p0 = p.prevPos, p1 = p.pos;
+  const total = p.burn ? trailLength(p) : 0;
+  // Skip the live tail and the last SELF_SAFE_LEN of path length; burnt pieces are harmless.
+  let acc = dist(p.pos, t[t.length - 1]);
   for (let i = t.length - 2; i >= 0; i--) {
     const len = dist(t[i], t[i + 1]);
-    if (acc >= CONFIG.SELF_SAFE_LEN && segIntersect(p0, p1, t[i], t[i + 1])) return true;
+    if (acc >= CONFIG.SELF_SAFE_LEN && segIntersect(p0, p1, t[i], t[i + 1])
+      && !isBurnt(p, total - acc - len, total - acc)) return true;
     acc += len;
   }
   return false;
@@ -254,7 +310,13 @@ function hitsTrail(a: Player, b: Player): boolean {
 function resolveCollisions(world: World, alive: Player[], pending: Map<number, number | null>) {
   for (const a of alive) {
     for (const b of alive) {
-      if (hitsTrail(a, b)) markDead(pending, b.id, a.id);
+      if (a === b) {
+        if (hitsOwnTrail(a)) markDead(pending, a.id, a.id);
+        continue;
+      }
+      // A rival trail hit doesn't kill outright: it sets the trail burning from the hit point.
+      const s = trailHitAt(a, b);
+      if (s !== null) b.burn = { s0: s, back: s, front: s, killerId: a.id };
     }
   }
   for (let i = 0; i < alive.length; i++) {
@@ -278,6 +340,7 @@ function applyDeaths(world: World, pending: Map<number, number | null>) {
     if (!p.alive) continue;
     p.alive = false;
     p.trail = [];
+    p.burn = null;
     p.dyingLand = p.land.length > 0 ? p.land : null;
     p.land = [];
     p.deathTime = world.time;
@@ -313,6 +376,7 @@ export function step(world: World, inputs: Map<number, Input>): void {
 
   const alive = world.players.filter((p) => p.alive);
   for (const p of alive) advance(world, p, inputs.get(p.id), pending);
+  advanceBurns(alive, pending);
   resolveCollisions(world, alive, pending);
   applyDeaths(world, pending);
   housekeeping(world);

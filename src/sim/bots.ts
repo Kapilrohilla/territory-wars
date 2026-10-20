@@ -180,9 +180,11 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
     brain.state = 'return';
   }
   if (brain.state === 'out' && tl > MAX_TRAIL_LEN) brain.state = 'return';
+  // Own trail burning: race the burn home; no hunting.
+  if (p.burn) brain.state = 'return';
 
-  // Hunt overrides, unless carrying a long trail.
-  const prey = tl <= CAUTION_TRAIL_LEN ? huntTarget(p, human) : null;
+  // Hunt overrides, unless carrying a long trail or burning.
+  const prey = tl <= CAUTION_TRAIL_LEN && !p.burn ? huntTarget(p, human) : null;
   if (prey) {
     brain.state = 'hunt';
     return finish(p, steerTo(p, prey));

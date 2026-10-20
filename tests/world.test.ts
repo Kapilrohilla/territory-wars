@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createWorld, step, pct } from '../src/sim/world';
+import { createWorld, step, pct, trailLength } from '../src/sim/world';
 import type { Input, Player, World } from '../src/sim/types';
 import { circleRing, type MultiPoly, type Vec } from '../src/sim/geometry';
 import { landArea } from '../src/sim/territory';
@@ -96,16 +96,128 @@ describe('world', () => {
     const w = soloWorld();
     const b = placeBot(w, v(5, 6), Math.PI / 2);
     b.trail = [v(5, -5), v(5, 5)];
+    let hitTick = -1, deathTick = -1;
     let death = null;
-    for (let i = 0; i < 60 && !death; i++) {
+    for (let i = 0; i < 120 && !death; i++) {
       step(w, NO_INPUT);
+      if (hitTick < 0 && b.burn) hitTick = i;
       death = w.events.find((e) => e.type === 'death') ?? null;
+      if (death) deathTick = i;
     }
+    expect(hitTick).toBeGreaterThanOrEqual(0);
+    expect(deathTick).toBeGreaterThan(hitTick); // dies after the burn, not on the hit tick
     expect(death).toEqual({ type: 'death', playerId: 1, killerId: 0 });
     expect(b.alive).toBe(false);
     expect(b.trail.length).toBe(0);
+    expect(b.burn).toBeNull();
     expect(w.players[0].alive).toBe(true);
     expect(w.players[0].kills).toBe(1);
+  });
+
+  it('trail hit starts a burn instead of killing', () => {
+    const w = soloWorld();
+    const b = placeBot(w, v(5, 6), Math.PI / 2);
+    b.trail = [v(5, -5), v(5, 5)];
+    for (let i = 0; i < 60 && !b.burn; i++) step(w, NO_INPUT);
+    expect(b.burn).not.toBeNull();
+    expect(b.alive).toBe(true);
+    expect(b.burn!.killerId).toBe(0);
+    expect(b.burn!.s0).toBeCloseTo(5, 0); // hit at y≈0, 5 u from trail[0]
+    expect(b.burn!.back).toBeLessThanOrEqual(b.burn!.s0);
+    expect(b.burn!.front).toBeGreaterThanOrEqual(b.burn!.s0);
+    expect(w.events.some((e) => e.type === 'death')).toBe(false);
+    expect(w.players[0].kills).toBe(0);
+    expect(trailLength(b)).toBeGreaterThan(b.burn!.front);
+    expect(JSON.parse(JSON.stringify(w))).toEqual(w);
+  });
+
+  it('burn reaches head kills victim and credits killer', () => {
+    const w = soloWorld();
+    const b = placeBot(w, v(5, 6), Math.PI / 2);
+    b.trail = [v(5, -5), v(5, 5)];
+    for (let i = 0; i < 60 && !b.burn; i++) step(w, NO_INPUT);
+    const burn = b.burn!;
+    const gap = trailLength(b) - burn.front;
+    const expected = gap / (CONFIG.BURN_SPEED - CONFIG.SPEED);
+    const t0 = w.time;
+    let death = null;
+    for (let i = 0; i < 300 && !death; i++) {
+      step(w, NO_INPUT);
+      death = w.events.find((e) => e.type === 'death') ?? null;
+      if (!death) {
+        expect(b.alive).toBe(true);
+        expect(b.burn!.front).toBeLessThan(trailLength(b));
+        expect(b.burn!.back).toBeGreaterThanOrEqual(0);
+      }
+    }
+    expect(death).toEqual({ type: 'death', playerId: 1, killerId: 0 });
+    expect(Math.abs(w.time - t0 - expected)).toBeLessThan(3 * CONFIG.DT);
+    expect(w.players[0].kills).toBe(1);
+    expect(b.burn).toBeNull();
+    // exactly one death event over the whole burn
+    for (let i = 0; i < 10; i++) {
+      step(w, NO_INPUT);
+      expect(w.events.some((e) => e.type === 'death')).toBe(false);
+    }
+  });
+
+  it('reaching home cancels burn and still captures', () => {
+    const w = soloWorld();
+    // Loop leaving home at (3.5, 12.5), down, across, and back up towards home at (5, 12).
+    const b = placeBot(w, v(5, 6), Math.PI / 2, v(5, 15), 3);
+    b.trail = [v(3.5, 12.5), v(3.5, -5), v(5, -5), v(5, 5)];
+    const before = landArea(b.land);
+    for (let i = 0; i < 60 && !b.burn; i++) step(w, NO_INPUT);
+    expect(b.burn).not.toBeNull();
+    let cap = false;
+    for (let i = 0; i < 120 && !cap; i++) {
+      step(w, NO_INPUT);
+      cap = w.events.some((e) => e.type === 'capture' && e.playerId === 1);
+    }
+    expect(cap).toBe(true);
+    expect(b.alive).toBe(true);
+    expect(b.burn).toBeNull();
+    expect(b.trail.length).toBe(0);
+    expect(landArea(b.land)).toBeGreaterThan(before + 10); // full loop captured, burnt part included
+    expect(w.players[0].alive).toBe(true); // crossing the still-unburnt x=5 leg was ignored
+    expect(w.players[0].kills).toBe(0);
+  });
+
+  it('burnt section is harmless', () => {
+    const w = soloWorld();
+    const h = w.players[0];
+    h.heading = Math.PI; h.targetHeading = Math.PI; // keep the human away
+    const b = placeBot(w, v(5, 41), Math.PI / 2);
+    b.trail = [v(5, -20), v(5, 40)];
+    b.burn = { s0: 20, back: 10, front: 30, killerId: 0 };
+    const c = w.players[2];
+    Object.assign(c, {
+      alive: true, pos: v(3, 0), prevPos: v(3, 0), heading: 0, targetHeading: 0,
+      land: disk(v(-40, -40), 3), trail: [], respawnAt: null, deathTime: null, dyingLand: null, burn: null,
+    });
+    for (let i = 0; i < 30; i++) {
+      step(w, NO_INPUT);
+      expect(w.events.some((e) => e.type === 'death')).toBe(false);
+    }
+    expect(c.pos.x).toBeGreaterThan(6); // crossed x = 5 at y = 0 (s = 20, burnt)
+    expect(c.alive).toBe(true);
+    expect(b.alive).toBe(true);
+    expect(b.burn!.killerId).toBe(0);
+    expect(c.kills).toBe(0);
+  });
+
+  it('own burning trail: burnt part is harmless, rest still kills instantly', () => {
+    const w = soloWorld();
+    const h = w.players[0];
+    h.heading = Math.PI; h.targetHeading = Math.PI;
+    // Bot heads south across its own trail at y = 0, which lies in the burnt range.
+    const b = placeBot(w, v(0, 2), -Math.PI / 2);
+    b.trail = [v(-30, 0), v(30, 0), v(30, 20), v(0, 20)];
+    b.trail.push(v(0, 2)); // live tail runs (0,20) → (0,2)
+    b.pos = v(0, 1.9); b.prevPos = v(0, 2);
+    b.burn = { s0: 30, back: 20, front: 40, killerId: 2 };
+    for (let i = 0; i < 30; i++) step(w, NO_INPUT);
+    expect(b.alive).toBe(true);
   });
 
   it('self trail kills self', () => {

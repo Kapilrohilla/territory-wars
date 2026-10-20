@@ -19,7 +19,15 @@ export type Player = {
   deathTime: number | null;
   respawnAt: number | null;
   dyingLand: MultiPoly | null;
+  /**
+   * Set while this player's trail burns after a rival hit it. Positions are path lengths
+   * from trail[0] (see trailLength): s0 is the hit, back/front the two fronts spreading
+   * from it. The range [back, front] is burnt and harmless. Null when not burning.
+   */
+  burn: Burn | null;
 };
+
+export type Burn = { s0: number; back: number; front: number; killerId: number };
 
 export type GameEvent =
   | { type: 'capture'; playerId: number; gainedPct: number; region: MultiPoly }

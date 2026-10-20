@@ -15,6 +15,8 @@ export const CONFIG = {
   TRAIL_STEP: 0.25,
   SELF_SAFE_LEN: 1.0,
   HEAD_ON_DIST: 1.0,
+  /** Speed (u/s, along the trail's path length) of each front of a burning trail. */
+  BURN_SPEED: 40,
   BOT_COUNT: 12,
   BOT_RESPAWN_S: 2,
   SPAWN_MIN_DIST: 20,

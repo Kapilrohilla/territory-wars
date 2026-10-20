@@ -128,18 +128,71 @@ function drawLands(ctx: CanvasRenderingContext2D, world: World, effects?: Effect
   }
 }
 
-function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec): void {
+const EMBER_R = 0.25;
+const EMBER_FLICKER_HZ = 9;
+
+/** Point at path length `at` along pts (cum[i] = path length at pts[i]). */
+function pointAt(pts: Vec[], cum: number[], at: number): Vec {
+  let i = 1;
+  while (i < pts.length - 1 && cum[i] < at) i++;
+  const a = pts[i - 1], b = pts[i];
+  const len = cum[i] - cum[i - 1];
+  const k = len > 0 ? Math.max(0, Math.min(1, (at - cum[i - 1]) / len)) : 0;
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+}
+
+/** Adds the piece of the polyline between path lengths a and b as one sub-path. */
+function addRange(ctx: CanvasRenderingContext2D, pts: Vec[], cum: number[], a: number, b: number): void {
+  if (b <= a) return;
+  const s = pointAt(pts, cum, a);
+  ctx.moveTo(s.x, s.y);
+  for (let i = 0; i < pts.length; i++) if (cum[i] > a && cum[i] < b) ctx.lineTo(pts[i].x, pts[i].y);
+  const e = pointAt(pts, cum, b);
+  ctx.lineTo(e.x, e.y);
+}
+
+function drawEmber(ctx: CanvasRenderingContext2D, at: Vec, time: number, phase: number): void {
+  const f = 0.5 + 0.5 * Math.sin((time * EMBER_FLICKER_HZ + phase) * Math.PI * 2);
+  ctx.save();
+  ctx.shadowColor = 'rgba(255, 120, 90, 0.9)';
+  ctx.shadowBlur = 6 + 6 * f;
+  ctx.beginPath();
+  ctx.arc(at.x, at.y, EMBER_R * (0.85 + 0.3 * f), 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(255, ${Math.round(110 + 50 * f)}, ${Math.round(100 + 40 * f)}, ${0.75 + 0.25 * f})`;
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec, time: number): void {
   const t = p.trail;
   if (t.length === 0) return;
   ctx.beginPath();
-  ctx.moveTo(t[0].x, t[0].y);
-  for (let i = 1; i < t.length; i++) ctx.lineTo(t[i].x, t[i].y);
-  ctx.lineTo(head.x, head.y); // live tail so the ribbon never lags the head
+  const burn = p.burn;
+  let pts: Vec[] = [], cum: number[] = [], total = 0;
+  if (!burn) {
+    ctx.moveTo(t[0].x, t[0].y);
+    for (let i = 1; i < t.length; i++) ctx.lineTo(t[i].x, t[i].y);
+    ctx.lineTo(head.x, head.y); // live tail so the ribbon never lags the head
+  } else {
+    // Skip the burnt range [back, front]; path lengths run from trail[0] to the head.
+    pts = t.concat([head]);
+    cum = [0];
+    for (let i = 1; i < pts.length; i++) {
+      cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+    }
+    total = cum[cum.length - 1];
+    addRange(ctx, pts, cum, 0, burn.back);
+    addRange(ctx, pts, cum, burn.front, total);
+  }
   ctx.strokeStyle = colors(p).trail;
   ctx.lineWidth = TRAIL_WIDTH;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.stroke();
+  if (burn && pts.length > 1) {
+    if (burn.back > 0) drawEmber(ctx, pointAt(pts, cum, burn.back), time, 0);
+    drawEmber(ctx, pointAt(pts, cum, Math.min(burn.front, total)), time, 0.5);
+  }
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -203,7 +256,7 @@ export function render(
   const alive = world.players.filter((p) => p.alive);
   const heads = new Map<number, Vec>();
   for (const p of alive) heads.set(p.id, interpPos(p, alpha));
-  for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!);
+  for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!, world.time);
   // Human last so it stays on top.
   const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
   for (const p of order) drawHead(ctx, p, heads.get(p.id)!, interpHeading(fx, p, alpha));
