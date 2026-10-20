@@ -3,11 +3,52 @@ import {
   landArea, landContains, thickTrail, captureLand, subtractLand, keepPiece,
 } from '../src/sim/territory';
 import type { MultiPoly, Vec } from '../src/sim/geometry';
+import * as pc from 'polygon-clipping';
+import { mulberry32 } from '../src/sim/rng';
 
 const rect = (x0: number, y0: number, x1: number, y1: number): MultiPoly => [[[
   { x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 },
 ]]];
 const v = (x: number, y: number): Vec => ({ x, y });
+
+/** Reference band: plain union of one quad per segment and a square per vertex (no simplification). */
+function referenceCapture(own: MultiPoly, trail: Vec[], w = 0.6): number {
+  const h = w / 2;
+  type P = [number, number][][];
+  const pieces: P[] = trail.map((p) => [[[p.x - h, p.y - h], [p.x + h, p.y - h], [p.x + h, p.y + h], [p.x - h, p.y + h]]]);
+  for (let i = 0; i + 1 < trail.length; i++) {
+    const a = trail[i], b = trail[i + 1];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len === 0) continue;
+    const nx = (-(b.y - a.y) / len) * h, ny = ((b.x - a.x) / len) * h;
+    pieces.push([[[a.x + nx, a.y + ny], [b.x + nx, b.y + ny], [b.x - nx, b.y - ny], [a.x - nx, a.y - ny]]]);
+  }
+  const ownPc = own.map((poly) => poly.map((r) => r.map((q): [number, number] => [q.x, q.y])));
+  const [first, ...rest] = pieces;
+  const merged = pc.union(ownPc, pc.union(first, ...rest)).map((poly) => poly.slice(0, 1));
+  const m: MultiPoly = merged.map((poly) => poly.map((r) => r.slice(0, -1).map(([x, y]) => ({ x, y }))));
+  return landArea(m);
+}
+
+/** Steering-like loop out of the square's east side and back: smooth turns plus some sharp zigzags. */
+function randomLoop(seed: number): Vec[] {
+  const rnd = mulberry32(seed);
+  const out: Vec[] = [v(9.8, 3)];
+  let p = v(10.2, 3), hd = 0;
+  out.push(p);
+  for (let i = 0; i < 160; i++) {
+    const sharp = rnd() < 0.05 ? (rnd() - 0.5) * 2.5 : 0;
+    hd += (rnd() - 0.5) * 0.25 + sharp + (i > 20 && i < 140 ? 0.02 : 0);
+    p = v(p.x + Math.cos(hd) * 0.25, p.y + Math.sin(hd) * 0.25);
+    if (p.x < 10.5) { p = v(10.5, p.y); hd = 0; }
+    out.push(p);
+  }
+  // head home in a straight line to the square's east side
+  const end = v(9.8, 8);
+  const n = Math.ceil(Math.hypot(end.x - p.x, end.y - p.y) / 0.25);
+  for (let k = 1; k <= n; k++) out.push(v(p.x + ((end.x - p.x) * k) / n, p.y + ((end.y - p.y) * k) / n));
+  return out;
+}
 
 describe('territory', () => {
   it('captures square loop', () => {
@@ -46,6 +87,47 @@ describe('territory', () => {
     expect(() => captureLand(own, [v(3, 3), v(3, 3), v(3, 3)])).not.toThrow();
     expect(landArea(captureLand(own, [v(3, 3), v(3, 3), v(3, 3)]))).toBeGreaterThanOrEqual(100 - 1e-6);
     expect(thickTrail([v(1, 1), v(1, 1)], 0.6).length).toBeGreaterThanOrEqual(0);
+  });
+
+  it('filling a hole that holds an own island does not double count', () => {
+    const sq = (x0: number, y0: number, x1: number, y1: number) => [v(x0, y0), v(x1, y0), v(x1, y1), v(x0, y1)];
+    // Ring 0..20 with hole 5..15, plus an island 8..12 inside the hole.
+    const own: MultiPoly = [[sq(0, 0, 20, 20), sq(5, 5, 15, 15)], [sq(8, 8, 12, 12)]];
+    expect(landArea(own)).toBeCloseTo(400 - 100 + 16, 6);
+    const trail = [v(19.5, 10), v(24, 10), v(24, 14), v(19.5, 14)];
+    const res = captureLand(own, trail);
+    expect(res.length).toBe(1);
+    expect(res[0].length).toBe(1);
+    const filledOuter = 400 + 4 * 4; // filled ring + the 4x4 bump
+    expect(landArea(res)).toBeGreaterThanOrEqual(filledOuter - 1);
+    expect(landArea(res)).toBeLessThanOrEqual(filledOuter + 6); // band margin, never +16 from the island
+  });
+
+  it('single-ring band matches the union-of-quads reference', () => {
+    const own = rect(0, 0, 10, 10);
+    for (let seed = 1; seed <= 12; seed++) {
+      const trail = randomLoop(seed);
+      const got = captureLand(own, trail);
+      expect(landArea(got)).toBeGreaterThan(100 + 50); // the loop really was captured
+      let ref: number | null = null;
+      try {
+        ref = referenceCapture(own, trail);
+      } catch {
+        // polygon-clipping cannot union the many overlapping reference pieces for some
+        // trails (the old implementation silently lost those captures); nothing to compare.
+      }
+      if (ref !== null) {
+        // RDP simplification at tolerance 0.15 can shift the band edge inwards by at most
+        // that much along the trail; bevel joins lose a little more at sharp corners.
+        let len = 0;
+        for (let i = 1; i < trail.length; i++) len += Math.hypot(trail[i].x - trail[i - 1].x, trail[i].y - trail[i - 1].y);
+        expect(Math.abs(landArea(got) - ref)).toBeLessThanOrEqual(0.15 * len);
+      }
+      expect(landArea(got)).toBeGreaterThanOrEqual(100 - 1e-6);
+      // the band covers the trail itself
+      const band = thickTrail(trail);
+      for (const q of trail) expect(landContains(band, q)).toBe(true);
+    }
   });
 
   it('subtractLand removes overlap', () => {
