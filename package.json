@@ -9,7 +9,10 @@
     "test": "vitest run --dir tests",
     "bench": "vitest run --dir bench --silent=false",
     "dev": "vite",
-    "build": "tsc --noEmit && vite build"
+    "build": "tsc --noEmit && vite build",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "cap open android",
+    "android:run": "npm run build && cap sync android && cap run android"
   },
   "repository": {
     "type": "git",
@@ -23,11 +26,17 @@
   },
   "homepage": "https://github.com/Kapilrohilla/paper-io-clone#readme",
   "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.5"
   },
   "dependencies": {
+    "@capacitor-community/admob": "^8.2.1",
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/haptics": "^8.0.2",
     "polygon-clipping": "^0.15.7"
   },
   "type": "module"
