@@ -1,0 +1,34 @@
+{
+  "name": "territory-wars",
+  "version": "1.0.0",
+  "description": "Territory Wars: an original browser territory-capture game.",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "vitest run --dir tests",
+    "bench": "vitest run --dir bench --silent=false",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kapilrohilla/paper-io-clone.git"
+  },
+  "keywords": [],
+  "author": "kapil rohilla <kapil.rohilla@carrum.co.in>",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Kapilrohilla/paper-io-clone/issues"
+  },
+  "homepage": "https://github.com/Kapilrohilla/paper-io-clone#readme",
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "polygon-clipping": "^0.15.7"
+  },
+  "type": "module"
+}
