@@ -2,18 +2,18 @@ import { CONFIG } from '../sim/config';
 import { angleDiff, type MultiPoly, type Vec } from '../sim/geometry';
 import type { Player, World } from '../sim/types';
 import type { Camera } from './camera';
+import type { Effects } from './effects';
 import { PALETTE } from './palette';
 
-const LIP_OFFSET = 0.35;
+export const LIP_OFFSET = 0.35;
 const TRAIL_WIDTH = 0.6;
 const HEAD_SIZE = 1.2;
 const HEAD_RADIUS = 0.3;
 const HEAD_SIDE = 0.22;
 const GRID_STEP = 5;
-const DYING_ALPHA = 0.4;
 const NAME_OFFSET = 1.5;
 
-/** Render-side state that spans frames (Task 6 extends this with effects). */
+/** Render-side state that spans frames. */
 export type Fx = {
   /** Each player's heading before the latest step, for interpolation. */
   prevHeading: Map<number, number>;
@@ -44,7 +44,7 @@ function interpHeading(fx: Fx, p: Player, alpha: number): number {
 // Sim replaces land arrays on change, so array identity is the cache key.
 const pathCache = new WeakMap<MultiPoly, Path2D>();
 
-function landPath(m: MultiPoly): Path2D {
+export function landPath(m: MultiPoly): Path2D {
   let path = pathCache.get(m);
   if (path) return path;
   path = new Path2D();
@@ -60,9 +60,23 @@ function landPath(m: MultiPoly): Path2D {
   return path;
 }
 
-function colors(p: Player) {
+export function playerColors(colorIndex: number) {
   const n = PALETTE.players.length;
-  return PALETTE.players[((p.colorIndex % n) + n) % n];
+  return PALETTE.players[((colorIndex % n) + n) % n];
+}
+
+function colors(p: Player) {
+  return playerColors(p.colorIndex);
+}
+
+/** Land with fading-in regions cut out (regions are subsets of land, so evenodd subtracts). */
+function maskedPath(m: MultiPoly, masks: MultiPoly[] | undefined): Path2D {
+  const base = landPath(m);
+  if (!masks || masks.length === 0) return base;
+  const path = new Path2D();
+  path.addPath(base);
+  for (const r of masks) path.addPath(landPath(r));
+  return path;
 }
 
 function drawArena(ctx: CanvasRenderingContext2D, cam: Camera, s: number): void {
@@ -94,27 +108,24 @@ function drawArena(ctx: CanvasRenderingContext2D, cam: Camera, s: number): void 
   ctx.stroke();
 }
 
-function drawLands(ctx: CanvasRenderingContext2D, world: World): void {
-  const items: { m: MultiPoly; p: Player; alpha: number }[] = [];
+// Dying land is drawn (shrinking) by the effects layer, not here.
+function drawLands(ctx: CanvasRenderingContext2D, world: World, effects?: Effects): void {
+  const items: { path: Path2D; p: Player }[] = [];
   for (const p of world.players) {
-    if (p.dyingLand && p.dyingLand.length) items.push({ m: p.dyingLand, p, alpha: DYING_ALPHA });
-    if (p.land.length) items.push({ m: p.land, p, alpha: 1 });
+    if (p.land.length) items.push({ path: maskedPath(p.land, effects?.landMask(p.id)), p });
   }
   // All lips first, then all tops: a neighbour's top occludes the lip below it.
   ctx.save();
   ctx.translate(0, LIP_OFFSET);
   for (const it of items) {
-    ctx.globalAlpha = it.alpha;
     ctx.fillStyle = colors(it.p).lip;
-    ctx.fill(landPath(it.m), 'evenodd');
+    ctx.fill(it.path, 'evenodd');
   }
   ctx.restore();
   for (const it of items) {
-    ctx.globalAlpha = it.alpha;
     ctx.fillStyle = colors(it.p).base;
-    ctx.fill(landPath(it.m), 'evenodd');
+    ctx.fill(it.path, 'evenodd');
   }
-  ctx.globalAlpha = 1;
 }
 
 function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec): void {
@@ -174,6 +185,7 @@ export function render(
   cam: Camera,
   alpha: number,
   fx: Fx,
+  effects?: Effects,
 ): void {
   ctx.fillStyle = PALETTE.bg;
   ctx.fillRect(0, 0, cam.viewW, cam.viewH);
@@ -185,7 +197,8 @@ export function render(
   ctx.translate(-cam.x, -cam.y);
 
   drawArena(ctx, cam, s);
-  drawLands(ctx, world);
+  drawLands(ctx, world, effects);
+  effects?.drawWorld(ctx);
 
   const alive = world.players.filter((p) => p.alive);
   const heads = new Map<number, Vec>();
@@ -206,4 +219,6 @@ export function render(
     const sp = cam.worldToScreen({ x: h.x, y: h.y - NAME_OFFSET });
     ctx.fillText(p.name, sp.x, sp.y);
   }
+
+  effects?.draw(ctx, cam);
 }

@@ -13,6 +13,31 @@ const KEYS: Record<string, 'l' | 'r' | 'u' | 'd'> = {
   ArrowDown: 'd', KeyS: 'd',
 };
 
+type KeyLike = {
+  code: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
+  target?: unknown;
+};
+
+function isEditable(t: unknown): boolean {
+  if (!t || typeof t !== 'object') return false;
+  const el = t as { tagName?: unknown; isContentEditable?: unknown };
+  const tag = typeof el.tagName === 'string' ? el.tagName.toUpperCase() : '';
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable === true;
+}
+
+/**
+ * The steering direction a keydown maps to, or null when the game should
+ * leave the event alone (unmapped key, browser shortcut, typing in a field).
+ */
+export function steerKey(e: KeyLike): 'l' | 'r' | 'u' | 'd' | null {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (isEditable(e.target)) return null;
+  return KEYS[e.code] ?? null;
+}
+
 /**
  * Pointer floating joystick + arrows/WASD (8 directions).
  * World convention: heading 0 = +x, +y is down on screen.
@@ -54,7 +79,7 @@ export function createInput(el: HTMLElement): InputSource {
     if (x !== 0 || y !== 0) heading = Math.atan2(y, x);
   };
   const onKeyDown = (e: KeyboardEvent) => {
-    const k = KEYS[e.code];
+    const k = steerKey(e);
     if (!k) return;
     held[k] = true;
     if (releaseTimer !== null) { clearTimeout(releaseTimer); releaseTimer = null; }
@@ -62,15 +87,19 @@ export function createInput(el: HTMLElement): InputSource {
     e.preventDefault();
   };
   const onKeyUp = (e: KeyboardEvent) => {
+    // Always release a mapped key (even with modifiers) so it can't stick.
     const k = KEYS[e.code];
-    if (!k) return;
+    if (!k || !held[k]) return;
     held[k] = false;
     // Remaining keys keep steering (diagonal → straight), after a short grace
     // so releasing both diagonal keys a few ms apart doesn't snap to one axis.
     if (releaseTimer !== null) clearTimeout(releaseTimer);
     releaseTimer = setTimeout(() => { releaseTimer = null; applyKeys(); }, KEY_RELEASE_GRACE_MS);
   };
-  const onBlur = () => { held.l = held.r = held.u = held.d = false; };
+  const onBlur = () => {
+    held.l = held.r = held.u = held.d = false;
+    if (releaseTimer !== null) { clearTimeout(releaseTimer); releaseTimer = null; }
+  };
 
   el.addEventListener('pointerdown', onDown);
   el.addEventListener('pointermove', onMove);
