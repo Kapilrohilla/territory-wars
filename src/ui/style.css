@@ -24,6 +24,7 @@
   --font-body: "Nunito Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --shadow-card: 0 6px 0 rgba(52, 50, 63, 0.06), 0 16px 36px rgba(52, 50, 63, 0.12);
   --shadow-float: 0 4px 16px rgba(52, 50, 63, 0.12);
+  --tabbar-h: calc(76px + env(safe-area-inset-bottom));
   --focus: 0 0 0 3px var(--card), 0 0 0 6px var(--ink);
 }
 
@@ -184,6 +185,52 @@ canvas#game {
 button:focus-visible,
 .tw-input:focus-visible { outline: none; box-shadow: var(--focus); }
 .tw-btn:focus-visible { box-shadow: 0 5px 0 var(--btn-lip, var(--periwinkle-lip)), var(--focus); }
+
+/* Menu screens (home, skins, records) leave room for the tab bar. */
+.tw-start,
+.tw-records,
+.tw-page { padding-bottom: calc(var(--tabbar-h) + 16px); }
+
+/* ---------- tab bar ---------- */
+
+.tw-tabbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  height: var(--tabbar-h);
+  box-sizing: border-box;
+  padding: 8px max(16px, env(safe-area-inset-left)) env(safe-area-inset-bottom);
+  border-radius: 24px 24px 0 0;
+  background: var(--card);
+  box-shadow: 0 -6px 24px rgba(52, 50, 63, 0.1);
+  pointer-events: auto;
+}
+.tw-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 56px;
+  margin: 0 auto;
+  width: min(100%, 120px);
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--ink-muted);
+  font: 800 12px var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.tw-tab .tw-icon { width: 26px; height: 26px; }
+.tw-tab:hover { color: var(--ink); }
+.tw-tab[aria-current="page"] { background: var(--periwinkle-tint); color: var(--ink); }
 
 /* ---------- home ---------- */
 
@@ -372,11 +419,11 @@ button:focus-visible,
 }
 .tw-start .tw-play .tw-icon { width: 26px; height: 26px; }
 
-.tw-records-btn { margin-top: 18px; min-height: 60px; }
 
 /* ---------- records & settings ---------- */
 
-.tw-records {
+.tw-records,
+.tw-page {
   display: block;
   background: var(--paper);
   -webkit-backdrop-filter: none;
@@ -384,20 +431,26 @@ button:focus-visible,
   padding-left: max(16px, env(safe-area-inset-left));
   padding-right: max(16px, env(safe-area-inset-right));
 }
-.tw-records-inner {
+.tw-records-inner,
+.tw-page-inner {
   width: min(100%, 480px);
   margin: 0 auto;
   padding-bottom: 8px;
 }
-.tw-records-head {
+.tw-records-head,
+.tw-page-head {
   display: flex;
   align-items: center;
   gap: 12px;
   margin: 4px 0 8px;
 }
-.tw-records-titles { flex: 1; min-width: 0; }
-.tw-records-title { font-size: clamp(23px, 6.6vw, 30px); }
-.tw-records-sub {
+.tw-records-titles,
+.tw-page-titles { flex: 1; min-width: 0; }
+.tw-records-title,
+.tw-page-title { font-size: clamp(23px, 6.6vw, 30px); }
+.tw-page-title { margin: 0; font-family: var(--font-display); font-weight: 900; letter-spacing: -0.02em; line-height: 1.05; }
+.tw-records-sub,
+.tw-page-sub {
   margin-top: 2px;
   font: 800 13px var(--font-display);
   letter-spacing: 0.12em;
@@ -934,29 +987,6 @@ button:focus-visible,
 }
 .tw-steer-hint.tw-gone { opacity: 0; }
 
-/* Sound toggle: bottom-left in game. */
-.tw-mute {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 52px;
-  height: 52px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: var(--shadow-float);
-  color: var(--ink);
-  cursor: pointer;
-  pointer-events: auto;
-}
-.tw-mute .tw-icon { width: 24px; height: 24px; }
-.tw-mute-hud {
-  position: absolute;
-  left: max(12px, env(safe-area-inset-left));
-  bottom: max(12px, env(safe-area-inset-bottom));
-}
-
 /* Whole-arena overview, bottom right. */
 .tw-minimap-wrap {
   position: absolute;
@@ -1014,4 +1044,243 @@ button:focus-visible,
 .tw-reduced-motion *, .tw-reduced-motion *::before, .tw-reduced-motion *::after {
   animation: none !important;
   transition: none !important;
+}
+
+/* ---------- records: lifetime, privacy ---------- */
+
+.tw-section-label {
+  margin: 24px 4px 10px;
+  font: 800 14px var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.tw-life {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 16px 6px;
+  border-radius: 24px;
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+}
+.tw-life-stat { text-align: center; border-left: 1.5px solid var(--line); }
+.tw-life-stat:first-child { border-left: 0; }
+.tw-life-value { font: 900 30px var(--font-display); line-height: 1.1; }
+.tw-life-label {
+  margin-top: 4px;
+  font: 800 12px var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.tw-privacy { min-height: 76px; }
+.tw-privacy-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--field);
+  box-shadow: inset 0 0 0 1.5px var(--line);
+}
+.tw-privacy-icon .tw-icon { width: 22px; height: 22px; }
+.tw-privacy-text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.tw-privacy-sub { font: 600 14px var(--font-body); color: var(--ink-muted); }
+.tw-setting .tw-chevron { width: 20px; height: 20px; color: var(--ink-muted); }
+.tw-row-off { cursor: default; }
+.tw-row-off .tw-chevron { display: none; }
+
+/* ---------- skins ---------- */
+
+.tw-skin-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 24px;
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+}
+.tw-skin-hero-canvas { flex: none; width: 112px; height: 112px; border-radius: 20px; background: var(--arena); }
+.tw-skin-hero-text { flex: 1; min-width: 0; }
+.tw-skin-hero-name { font: 900 24px var(--font-display); }
+.tw-skin-hero-note { margin: 2px 0 8px; font-size: 14px; font-weight: 600; color: var(--ink-muted); }
+.tw-moods { display: flex; flex-wrap: wrap; gap: 6px; }
+.tw-mood {
+  min-height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--field);
+  color: var(--ink-muted);
+  font: 700 13px var(--font-display);
+  cursor: pointer;
+}
+.tw-mood[aria-checked="true"] { background: var(--periwinkle); color: var(--ink); box-shadow: 0 2px 0 var(--periwinkle-lip); }
+/* Mood chips are small; pad their hit area to 48px without growing the chip. */
+.tw-mood { position: relative; }
+.tw-mood::after { content: ""; position: absolute; inset: -6px -2px; }
+
+.tw-skins-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 14px 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-align: center;
+}
+.tw-skin-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.tw-skin-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  padding: 10px 8px 10px;
+  border-radius: 22px;
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  text-align: center;
+}
+.tw-skin-equipped { box-shadow: inset 0 0 0 3px var(--revive), var(--shadow-card); padding-top: 24px; }
+.tw-skin-ribbon {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 3px 0;
+  border-radius: 22px 22px 0 0;
+  background: var(--revive);
+  font: 900 11px var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.tw-skin-adtag { position: absolute; top: 8px; right: 8px; }
+.tw-skin-face {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  padding: 0;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  cursor: pointer;
+}
+.tw-skin-face canvas { width: 72px; height: 72px; }
+.tw-skin-face[aria-pressed="true"] { background: var(--periwinkle-tint); }
+.tw-skin-locked .tw-skin-face canvas { opacity: 0.45; filter: grayscale(0.6); }
+.tw-skin-lock {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  padding: 7px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--card);
+  transform: translate(-50%, -50%);
+}
+.tw-skin-name { margin-top: 4px; font: 800 15px var(--font-display); }
+.tw-skin-goal { margin-top: 2px; font: 800 11px var(--font-display); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-muted); }
+.tw-skin-progress { font: 800 12px var(--font-display); color: var(--ink); }
+.tw-skin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: auto;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--field);
+  box-shadow: 0 3px 0 rgba(52, 50, 63, 0.12);
+  color: var(--ink);
+  font: 900 14px var(--font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.tw-skin-card > .tw-skin-name + .tw-skin-btn,
+.tw-skin-progress + .tw-skin-btn { margin-top: 8px; }
+.tw-skin-btn .tw-icon { width: 16px; height: 16px; }
+.tw-skin-btn-equipped { background: #ddf7e8; box-shadow: inset 0 0 0 2px #7fdcaa; cursor: default; }
+.tw-skin-btn-ad { background: var(--periwinkle); box-shadow: 0 3px 0 var(--periwinkle-lip); }
+.tw-skin-btn-locked { background: transparent; box-shadow: inset 0 0 0 1.5px var(--line); color: var(--ink-muted); cursor: default; }
+.tw-skin-btn:disabled { cursor: default; }
+.tw-skin-btn:active:not(:disabled) { transform: translateY(2px); }
+
+/* ---------- pause ---------- */
+
+.tw-pause-btn {
+  position: absolute;
+  top: var(--hud-top);
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-float);
+  color: var(--ink);
+  transform: translateX(-50%);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.tw-pause-btn .tw-icon { width: 24px; height: 24px; stroke-width: 3; }
+.tw-pause { z-index: 2; background: rgba(52, 50, 63, 0.42); }
+.tw-pause-title { margin: 0 0 6px; font: 900 34px var(--font-display); }
+.tw-pause-card .tw-btn { margin-top: 12px; }
+.tw-pause-card .tw-btn-secondary { --btn: var(--field); }
+.tw-pause-card .tw-resume { margin-top: 16px; min-height: 60px; font-size: 22px; }
+.tw-pause-settings { margin-top: 16px; box-shadow: inset 0 0 0 1.5px var(--line); }
+
+/* ---------- results: unlocks and native ad ---------- */
+
+.tw-over-unlocked {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: var(--gold-tint);
+  box-shadow: inset 0 0 0 2px var(--gold);
+  font: 800 15px var(--font-display);
+}
+.tw-native-ad { margin-top: 16px; }
+.tw-native-label {
+  margin: 0 4px 6px;
+  font: 800 11px var(--font-display);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+/* The ad SDK draws over this box; it must stay at least 120×120. */
+.tw-native-slot { min-height: 128px; border-radius: 20px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--line); }
+
+@media (max-width: 420px) {
+  /* No room between the HUD cards: the pause button sits under the area card. */
+  .tw-pause-btn {
+    left: max(12px, env(safe-area-inset-left));
+    top: calc(var(--hud-top) + 112px);
+    width: 48px;
+    height: 48px;
+    transform: none;
+  }
+  .tw-area.tw-burning ~ .tw-pause-btn { top: calc(var(--hud-top) + 140px); }
 }

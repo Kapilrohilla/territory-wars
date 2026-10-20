@@ -6,6 +6,9 @@ import { pct } from '../sim/world';
 import { CONFIG, DIFFICULTIES, type Difficulty } from '../sim/config';
 import type { DeathCause, Player, World } from '../sim/types';
 import type { BestScore } from './best';
+import { button, el, icon, labelRow, setText, statTile, svg, type IconName } from './dom';
+import type { Lifetime } from './progress';
+import { createSkinsScreen, type SkinsView } from './skinsScreen';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -176,7 +179,28 @@ export type OverStats = {
   won: boolean; pct: number; kills: number; time: number; newBest: boolean; difficulty: Difficulty;
   /** Best for this difficulty after the run was recorded. */
   best: BestScore | null;
+  /** Names of skins this round unlocked. */
+  unlocked: string[];
 };
+
+export type Tab = 'play' | 'skins' | 'records';
+
+export type RecordsView = {
+  bestFor: (difficulty: Difficulty) => BestScore | null;
+  lifetime: Lifetime;
+  /** In the app the Privacy & ads row opens Google's consent form; a browser shows no ads. */
+  native: boolean;
+  /** Opens the consent (privacy options) form; resolves false if it couldn't. */
+  openPrivacy(): Promise<boolean>;
+};
+
+export type PauseHandlers = { resume(): void; restart(): void; home(): void };
+
+/** Puts a native ad in `slot` (shown at once); calls `failed` if none loads. Resolves to a cleanup. */
+export type NativeAdSlot = (slot: HTMLElement, failed: () => void) => Promise<() => void>;
+
+/** Whether the HUD minimap is shown (a setting, on by default). */
+export const MINIMAP_KEY = 'territory-wars.minimap';
 
 const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
 const DIFFICULTY_SHORT: Record<Difficulty, string> = { easy: 'Easy', normal: 'Norm', hard: 'Hard' };
@@ -203,113 +227,34 @@ export type ReviveHandlers = {
 export type Screens = {
   /**
    * Home screen: best score (for the selected difficulty), name, colour, difficulty and Play.
-   * Records opens the records & settings screen with the prefs as currently picked.
+   * The tab bar calls onTab with the prefs as currently picked.
    */
   showStart(
     prefs: StartPrefs,
     bestFor: (difficulty: Difficulty) => BestScore | null,
     onPlay: (prefs: StartPrefs) => void,
-    onRecords: (prefs: StartPrefs) => void,
+    onTab: (tab: Tab, prefs: StartPrefs) => void,
   ): void;
-  /** Records & settings: personal bests per difficulty and the settings toggles. */
-  showRecords(bestFor: (difficulty: Difficulty) => BestScore | null, onBack: () => void): void;
+  /** Records & settings: bests per difficulty, lifetime stats, settings and privacy. */
+  showRecords(view: RecordsView, onTab: (tab: Tab) => void): void;
+  /** Skins: pick a face, unlock more by playing or with an ad. */
+  showSkins(view: SkinsView, onTab: (tab: Tab) => void): void;
   /** Overview canvas in the HUD's bottom-right corner. */
   minimap: HTMLCanvasElement;
-  showHud(): void;
+  /** The in-game HUD; its pause button calls onPause. */
+  showHud(onPause: () => void): void;
+  /** Pause menu over the frozen game. */
+  showPause(handlers: PauseHandlers): void;
+  hidePause(): void;
   /** Refreshes the HUD; returns true while the % counter is animating (call tickHud per frame). */
   updateHud(world: World, now: number): boolean;
   /** Advances the % counter animation; returns true while it is still animating. */
   tickHud(now: number): boolean;
-  showOver(stats: OverStats, onAgain: () => void, onHome: () => void): void;
+  showOver(stats: OverStats, onAgain: () => void, onHome: () => void, nativeAd?: NativeAdSlot): void;
   /** Revive modal over the (frozen) game and HUD, with a REVIVE_COUNTDOWN_MS countdown. */
   showRevive(info: ReviveInfo, handlers: ReviveHandlers): void;
   hideRevive(): void;
 };
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
-  const e = document.createElement(tag);
-  if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
-  return e;
-}
-
-function setText(e: HTMLElement, t: string): void {
-  if (e.textContent !== t) e.textContent = t;
-}
-
-function button(cls: string, text?: string): HTMLButtonElement {
-  const b = el('button', cls, text);
-  b.type = 'button';
-  return b;
-}
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
-
-function svg(tag: string, attrs: Record<string, string>): SVGElement {
-  const e = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-  return e;
-}
-
-/** 24×24 line icons (stroke = currentColor); names ending in "-fill" are solid shapes. */
-const ICONS = {
-  'play-fill': 'M8 5.5v13l10.5-6.5z',
-  'star': 'M12 3.5l2.6 5.3 5.9.9-4.25 4.1 1 5.8L12 16.9l-5.25 2.75 1-5.8L3.5 9.7l5.9-.9z',
-  'flame': 'M12 3c.6 3.4 5 5.6 5 10.5a5 5 0 0 1-10 0c0-2.4 1.4-4 2.5-5 .2 1.7 1 2.8 2 3.1.4-3-.5-5.6.5-8.6z',
-  'swords': 'M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2M14.5 6.5L18 3h3v3l-3.5 3.5M5 14l4 4M7 17l-3 3M3 19l2 2',
-  'timer': 'M10 2h4M12 14l3-3M20 14a8 8 0 1 1-16 0 8 8 0 0 1 16 0z',
-  'crown-fill': 'M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z',
-  'trophy': 'M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3',
-  'shield': 'M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z',
-  'video': 'M3.5 5.5h17v13h-17zM10 9v6l5-3z',
-  'back': 'M19 12H5M11 6l-6 6 6 6',
-  'chart': 'M4 20h16M6 20v-8h4v8M10 20V5h4v15M14 20v-6h4v6',
-  'close': 'M6 6l12 12M18 6L6 18',
-  'x-circle': 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0zM9 9l6 6M15 9l-6 6',
-  'sound': 'M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11',
-  'sound-off': 'M4 9v6h4l5 4V5L8 9zM17 9.5l5 5M22 9.5l-5 5',
-  'vibrate': 'M8.5 4h7v16h-7zM5 8v8M19 8v8M2 10v4M22 10v4',
-  'motion-off': 'M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0zM6.3 6.3l11.4 11.4',
-  'gear': 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
-  'check': 'M5 12.5l4.5 4.5L19 7',
-  'dice': 'M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01',
-  'home': 'M3.5 10.5L12 3.5l8.5 7V20a.5.5 0 0 1-.5.5h-5v-6h-6v6H4a.5.5 0 0 1-.5-.5z',
-  'trend': 'M3 17l6-6 4 4 8-8M15 7h6v6',
-  'id': 'M3.5 6h17v13h-17zM9 13a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM5.8 17c.8-1.7 5.6-1.7 6.4 0M14.5 10h3.5M14.5 14h3.5',
-} as const;
-type IconName = keyof typeof ICONS;
-
-function icon(name: IconName, cls = ''): SVGElement {
-  const fill = name.endsWith('-fill');
-  const s = svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true', class: `tw-icon ${cls}`.trim() });
-  s.append(svg('path', fill
-    ? { d: ICONS[name], fill: 'currentColor' }
-    : { d: ICONS[name], fill: 'none', stroke: 'currentColor', 'stroke-width': '2.2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
-  return s;
-}
-
-/** A small uppercase label row: text on the left, optional aside on the right. */
-function labelRow(text: string, aside?: HTMLElement, forId?: string): HTMLElement {
-  const row = el('div', 'tw-label-row');
-  const l = el(forId ? 'label' : 'div', 'tw-label', text);
-  if (forId) (l as HTMLLabelElement).htmlFor = forId;
-  row.append(l);
-  if (aside) row.append(aside);
-  return row;
-}
-
-/** A stat tile (label over value) appended to `parent`; returns the label text and value elements. */
-function statTile(parent: HTMLElement, name: IconName | null, label: string): { label: HTMLElement; value: HTMLElement } {
-  const box = el('div', 'tw-tile');
-  const l = el('div', 'tw-tile-label');
-  const text = el('span', undefined, label);
-  if (name) l.append(icon(name));
-  l.append(text);
-  const value = el('div', 'tw-tile-value tw-num');
-  box.append(l, value);
-  parent.append(box);
-  return { label: text, value };
-}
 
 type RowEls = { root: HTMLElement; rank: HTMLElement; swatch: HTMLElement; name: HTMLElement; pct: HTMLElement; key: string };
 
@@ -326,26 +271,6 @@ export function createScreens(root: HTMLElement): Screens {
   type Toggle = { btn: HTMLButtonElement; sync(): void };
   const toggles: Toggle[] = [];
   const syncAll = () => { for (const t of toggles) t.sync(); };
-  /** In-game speaker toggle; stays in sync with the Sound setting. */
-  const muteButton = (cls: string) => {
-    const b = button(`tw-mute ${cls}`);
-    b.addEventListener('click', () => {
-      unlockAudio();
-      setMuted(!isMuted());
-      syncAll();
-      playTick();
-    });
-    toggles.push({
-      btn: b,
-      sync() {
-        const m = isMuted();
-        b.replaceChildren(icon(m ? 'sound-off' : 'sound'));
-        b.setAttribute('aria-label', m ? 'Sound off. Turn sound on' : 'Sound on. Turn sound off');
-        b.setAttribute('aria-pressed', String(m));
-      },
-    });
-    return b;
-  };
 
   // ----- start -----
   const start = el('div', 'tw-screen tw-start');
@@ -420,10 +345,7 @@ export function createScreens(root: HTMLElement): Screens {
   const playBtn = button('tw-btn tw-play');
   playBtn.append(icon('play-fill'), el('span', undefined, 'Play'));
   startCard.append(playBtn);
-  const recordsBtn = button('tw-btn tw-btn-secondary tw-records-btn');
-  recordsBtn.append(icon('chart'), el('span', undefined, 'Records'));
-  recordsBtn.setAttribute('aria-label', 'Records and settings');
-  startWrap.append(startCard, recordsBtn);
+  startWrap.append(startCard);
   start.append(startWrap);
 
   let chosen = 0;
@@ -465,7 +387,7 @@ export function createScreens(root: HTMLElement): Screens {
     diffBtns[i].focus();
   });
   let onPlayCb: ((p: StartPrefs) => void) | null = null;
-  let onRecordsCb: ((p: StartPrefs) => void) | null = null;
+  let onStartTab: ((t: Tab, p: StartPrefs) => void) | null = null;
   const pick = (i: number) => {
     chosen = i;
     swatchBtns.forEach((b, j) => {
@@ -491,19 +413,11 @@ export function createScreens(root: HTMLElement): Screens {
   const submit = () => {
     if (!onPlayCb) return;
     const cb = onPlayCb;
-    onPlayCb = onRecordsCb = null; // one click = one game
+    onPlayCb = onStartTab = null; // one click = one game
     cb(currentPrefs());
   };
   playBtn.addEventListener('click', submit);
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-  recordsBtn.addEventListener('click', () => {
-    if (!onRecordsCb) return;
-    const cb = onRecordsCb;
-    onPlayCb = onRecordsCb = null;
-    unlockAudio();
-    playTick();
-    cb(currentPrefs());
-  });
 
   // ----- records & settings -----
   const records = el('div', 'tw-screen tw-records');
@@ -551,8 +465,22 @@ export function createScreens(root: HTMLElement): Screens {
     return { card, highest, pctEl, kills, time, empty };
   });
 
+  const lifeTiles = el('div', 'tw-life');
+  const lifeStat = (label: string) => {
+    const t = el('div', 'tw-life-stat');
+    const v = el('div', 'tw-life-value tw-num', '0');
+    t.append(v, el('div', 'tw-life-label', label));
+    lifeTiles.append(t);
+    return v;
+  };
+  const lifeGames = lifeStat('Games');
+  const lifeKills = lifeStat('Total kills');
+  const lifeRevives = lifeStat('Revives');
+
+  let minimapOn = readFlag(MINIMAP_KEY, true);
   const settingsList = el('div', 'tw-settings');
-  const settingRow = (name: IconName, label: string, get: () => boolean, set: (on: boolean) => void) => {
+  const settingRow = (name: IconName, label: string, get: () => boolean, set: (on: boolean) => void,
+    parent: HTMLElement = settingsList) => {
     const b = button('tw-setting');
     b.setAttribute('role', 'switch');
     const knob = el('span', 'tw-switch');
@@ -560,7 +488,7 @@ export function createScreens(root: HTMLElement): Screens {
     b.append(icon(name), el('span', 'tw-setting-label', label), knob);
     b.addEventListener('click', () => { set(!get()); syncAll(); });
     toggles.push({ btn: b, sync: () => b.setAttribute('aria-checked', String(get())) });
-    settingsList.append(b);
+    parent.append(b);
   };
   settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); });
   settingRow('vibrate', 'Vibration', isVibrationOn, (on) => setVibrationOn(on));
@@ -569,9 +497,34 @@ export function createScreens(root: HTMLElement): Screens {
     writeFlag(REDUCED_MOTION_KEY, on);
     applyReduced();
   });
+  settingRow('map', 'Show minimap', () => minimapOn, (on) => {
+    minimapOn = on;
+    writeFlag(MINIMAP_KEY, on);
+  });
+  // Privacy & ads: Google's consent form in the app; a browser build shows no ads at all.
+  const privacyBtn = button('tw-setting tw-privacy');
+  const privacyIcon = el('span', 'tw-privacy-icon');
+  privacyIcon.append(icon('shield'));
+  const privacyText = el('span', 'tw-privacy-text');
+  const privacySub = el('span', 'tw-privacy-sub');
+  privacyText.append(el('span', 'tw-setting-label', 'Privacy & ads'), privacySub);
+  privacyBtn.append(privacyIcon, privacyText, icon('chevron', 'tw-chevron'));
+  settingsList.append(privacyBtn);
+  let recordsView: RecordsView | null = null;
+  privacyBtn.addEventListener('click', async () => {
+    const v = recordsView;
+    if (!v?.native) return;
+    privacyBtn.disabled = true;
+    const ok = await v.openPrivacy().catch(() => false);
+    privacyBtn.disabled = false;
+    if (!ok) setText(privacySub, 'No ad choices to change in your region');
+  });
   const recFoot = el('footer', 'tw-records-foot');
-  recFoot.append(el('div', 'tw-foot-strong', 'Territory Wars · Ages 13+'), el('div', undefined, 'No in-app purchases'));
-  recInner.append(recHead, sectionHead('trophy', 'Personal bests'), bestList, sectionHead('gear', 'Settings'), settingsList, recFoot);
+  recFoot.append(el('div', 'tw-foot-strong', 'Territory Wars · Ages 13+'),
+    el('div', undefined, 'No in-app purchases · Ad-supported fair play'));
+  recInner.append(recHead, sectionHead('trophy', 'Personal bests'), bestList,
+    el('h3', 'tw-section-label', 'Lifetime career'), lifeTiles,
+    sectionHead('gear', 'Settings'), settingsList, recFoot);
   records.append(recInner);
   let onBackCb: (() => void) | null = null;
   const leaveRecords = () => {
@@ -647,7 +600,12 @@ export function createScreens(root: HTMLElement): Screens {
   minimap.setAttribute('aria-label', 'Map of the whole arena');
   minimap.setAttribute('role', 'img');
   minimapWrap.append(minimap, el('span', 'tw-minimap-label', 'Map'));
-  hud.append(area, boardBox, alerts, shieldToast, steerHint, minimapWrap, muteButton('tw-mute-hud'));
+  const pauseBtn = button('tw-pause-btn');
+  pauseBtn.setAttribute('aria-label', 'Pause');
+  pauseBtn.append(icon('pause'));
+  let onPauseCb: (() => void) | null = null;
+  pauseBtn.addEventListener('click', () => onPauseCb?.());
+  hud.append(area, pauseBtn, boardBox, alerts, shieldToast, steerHint, minimapWrap);
   let hudColor = -1;
 
   // ----- game over -----
@@ -683,7 +641,23 @@ export function createScreens(root: HTMLElement): Screens {
   againBtn.append(icon('play-fill'), el('span', undefined, 'Play again'));
   const homeBtn = button('tw-btn tw-btn-secondary tw-home');
   homeBtn.append(icon('home'), el('span', undefined, 'Home'));
-  overWrap.append(overCard, againBtn, homeBtn);
+  const overUnlocked = el('p', 'tw-over-unlocked');
+  overCard.append(overUnlocked);
+  // Native ad card under the buttons (app only); hidden again if no ad loads.
+  const adBox = el('aside', 'tw-native-ad');
+  adBox.setAttribute('aria-label', 'Sponsored');
+  const adSlot = el('div', 'tw-native-slot');
+  adBox.append(el('div', 'tw-native-label', 'Sponsored'), adSlot);
+  adBox.hidden = true;
+  let adCleanup: (() => void) | null = null;
+  let adToken = 0;
+  const dropAd = () => {
+    adToken++;
+    adCleanup?.();
+    adCleanup = null;
+    adBox.hidden = true;
+  };
+  overWrap.append(overCard, againBtn, homeBtn, adBox);
   over.append(overWrap);
   const copyMinimap = () => {
     const size = 96;
@@ -693,6 +667,7 @@ export function createScreens(root: HTMLElement): Screens {
     if (!ctx) return;
     ctx.clearRect(0, 0, overMap.width, overMap.height);
     if (minimap.width > 0) ctx.drawImage(minimap, 0, 0, overMap.width, overMap.height);
+    overMap.hidden = !minimapOn || minimap.width === 0;
   };
   let onAgainCb: (() => void) | null = null;
   let onHomeCb: (() => void) | null = null;
@@ -835,32 +810,116 @@ export function createScreens(root: HTMLElement): Screens {
   noThanks.addEventListener('click', giveUp);
   closeBtn.addEventListener('click', giveUp);
 
-  root.append(hud, start, records, over, revive);
-  const all = [start, records, hud, over];
+  // ----- pause -----
+  const pause = el('div', 'tw-screen tw-pause');
+  pause.setAttribute('role', 'dialog');
+  pause.setAttribute('aria-modal', 'true');
+  pause.setAttribute('aria-labelledby', 'tw-pause-title');
+  const pauseCard = el('div', 'tw-card tw-pause-card');
+  const pauseTitle = el('h2', 'tw-pause-title', 'Paused');
+  pauseTitle.id = 'tw-pause-title';
+  const resumeBtn = button('tw-btn tw-resume');
+  resumeBtn.append(icon('play-fill'), el('span', undefined, 'Resume'));
+  const restartBtn = button('tw-btn tw-btn-secondary tw-restart');
+  restartBtn.append(icon('restart'), el('span', undefined, 'Restart'));
+  const pauseHomeBtn = button('tw-btn tw-btn-secondary tw-pause-home');
+  pauseHomeBtn.append(icon('home'), el('span', undefined, 'Home'));
+  const pauseSettings = el('div', 'tw-settings tw-pause-settings');
+  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); }, pauseSettings);
+  pauseCard.append(pauseTitle, resumeBtn, restartBtn, pauseHomeBtn, pauseSettings);
+  pause.append(pauseCard);
+  pause.hidden = true;
+  let pauseHandlers: PauseHandlers | null = null;
+  const leavePause = (which: keyof PauseHandlers) => {
+    const h = pauseHandlers;
+    if (!h) return;
+    closePause();
+    h[which]();
+  };
+  function onPauseKey(e: KeyboardEvent) {
+    if (e.key === 'Escape' || e.key === 'p' || e.key === 'P') {
+      e.preventDefault();
+      leavePause('resume');
+    }
+  }
+  const closePause = () => {
+    pauseHandlers = null;
+    pause.hidden = true;
+    document.removeEventListener('keydown', onPauseKey);
+  };
+  resumeBtn.addEventListener('click', () => leavePause('resume'));
+  restartBtn.addEventListener('click', () => leavePause('restart'));
+  pauseHomeBtn.addEventListener('click', () => leavePause('home'));
+
+  // ----- skins -----
+  const skins = createSkinsScreen(() => onTabCb?.('play'));
+
+  // ----- tab bar (home, skins, records) -----
+  const tabbar = el('nav', 'tw-tabbar');
+  tabbar.setAttribute('aria-label', 'Main');
+  const TABS: { tab: Tab; label: string; name: IconName }[] = [
+    { tab: 'play', label: 'Play', name: 'play-circle' },
+    { tab: 'skins', label: 'Skins', name: 'palette' },
+    { tab: 'records', label: 'Records', name: 'chart' },
+  ];
+  const tabBtns = TABS.map((t) => {
+    const b = button('tw-tab');
+    b.append(icon(t.name), el('span', undefined, t.label));
+    b.addEventListener('click', () => {
+      if (b.getAttribute('aria-current') === 'page') return;
+      unlockAudio();
+      playTick();
+      onTabCb?.(t.tab);
+    });
+    tabbar.append(b);
+    return b;
+  });
+  let onTabCb: ((t: Tab) => void) | null = null;
+  const setTab = (tab: Tab, cb: (t: Tab) => void) => {
+    onTabCb = (t) => { onTabCb = null; cb(t); }; // one tap = one navigation
+    TABS.forEach((t, i) => {
+      if (t.tab === tab) tabBtns[i].setAttribute('aria-current', 'page');
+      else tabBtns[i].removeAttribute('aria-current');
+    });
+  };
+
+  root.append(hud, start, skins.root, records, over, revive, pause, tabbar);
+  const all = [start, skins.root, records, hud, over];
+  const menus = [start, skins.root, records];
   const only = (shown: HTMLElement) => {
     for (const e of all) e.hidden = e !== shown;
+    tabbar.hidden = !menus.includes(shown);
     if (offer) closeRevive();
+    if (pauseHandlers) closePause();
+    if (shown !== over) dropAd();
+    if (shown !== hud) onPauseCb = null;
   };
   syncAll();
   only(start);
 
   return {
     minimap,
-    showStart(prefs, bestFor, onPlay, onRecords) {
+    showStart(prefs, bestFor, onPlay, onTab) {
       bestForCb = bestFor;
       pickDiff(prefs.difficulty);
       nameInput.value = prefs.name;
       pick(((prefs.color % swatchBtns.length) + swatchBtns.length) % swatchBtns.length);
       onPlayCb = onPlay;
-      onRecordsCb = onRecords;
+      onStartTab = onTab;
       only(start);
+      setTab('play', (t) => {
+        const cb = onStartTab;
+        onPlayCb = onStartTab = null;
+        cb?.(t, currentPrefs());
+      });
       swatchBtns[chosen].scrollIntoView?.({ block: 'nearest', inline: 'center' });
       start.scrollTop = 0;
       playBtn.focus({ preventScroll: true });
     },
-    showRecords(bestFor, onBack) {
+    showRecords(view, onTab) {
+      recordsView = view;
       const bests: Partial<Record<Difficulty, BestScore | null>> = {};
-      for (const d of DIFFICULTIES) bests[d] = bestFor(d);
+      for (const d of DIFFICULTIES) bests[d] = view.bestFor(d);
       const top = highestBest(bests);
       DIFFICULTIES.forEach((d, i) => {
         const b = bests[d] ?? null;
@@ -871,13 +930,26 @@ export function createScreens(root: HTMLElement): Screens {
         setText(c.kills, b ? String(b.kills) : '—');
         setText(c.time, b ? formatTime(b.time) : '—');
       });
+      setText(lifeGames, String(view.lifetime.games));
+      setText(lifeKills, String(view.lifetime.totalKills));
+      setText(lifeRevives, String(view.lifetime.revives));
+      setText(privacySub, view.native ? 'Ad preferences · Manage consent' : 'Ads only run in the Android app');
+      privacyBtn.setAttribute('aria-disabled', String(!view.native));
+      privacyBtn.classList.toggle('tw-row-off', !view.native);
       syncAll();
-      onBackCb = onBack;
       only(records);
+      setTab('records', onTab);
+      onBackCb = () => onTabCb?.('play');
       records.scrollTop = 0;
       backBtn.focus({ preventScroll: true });
     },
-    showHud() {
+    showSkins(view, onTab) {
+      skins.show(view);
+      only(skins.root);
+      setTab('skins', onTab);
+      skins.focus();
+    },
+    showHud(onPause) {
       for (const r of rowEls) { r.root.hidden = true; r.key = ''; }
       pctTween.snap(0);
       setText(pctNum, '0.00');
@@ -887,8 +959,21 @@ export function createScreens(root: HTMLElement): Screens {
       area.classList.remove('tw-burning');
       steerHint.classList.remove('tw-gone');
       hudColor = -1;
+      minimapWrap.hidden = !minimapOn;
       syncAll();
       only(hud);
+      onPauseCb = onPause;
+    },
+    showPause(handlers) {
+      if (offer) return; // the revive offer owns the screen
+      pauseHandlers = handlers;
+      syncAll();
+      pause.hidden = false;
+      document.addEventListener('keydown', onPauseKey);
+      resumeBtn.focus({ preventScroll: true });
+    },
+    hidePause() {
+      if (pauseHandlers) closePause();
     },
     tickHud(now) {
       setText(pctNum, Math.max(0, pctTween.value(now)).toFixed(2));
@@ -930,7 +1015,7 @@ export function createScreens(root: HTMLElement): Screens {
       });
       return pctTween.active(now);
     },
-    showOver(s, onAgain, onHome) {
+    showOver(s, onAgain, onHome, nativeAd) {
       newBestEl.hidden = !s.newBest;
       setText(overTitle, s.won ? 'You won!' : 'Game over');
       setText(overDiff, DIFFICULTY_LABEL[s.difficulty]);
@@ -943,9 +1028,19 @@ export function createScreens(root: HTMLElement): Screens {
       setText(overTime, formatTime(s.time));
       setText(overBest.value, s.best ? formatPct(s.best.pct, 1) : '—');
       copyMinimap();
+      setText(overUnlocked, s.unlocked.length ? `New skin unlocked: ${s.unlocked.join(', ')}!` : '');
+      overUnlocked.hidden = !s.unlocked.length;
       onAgainCb = onAgain;
       onHomeCb = onHome;
       only(over);
+      if (nativeAd) {
+        const token = ++adToken;
+        adBox.hidden = false;
+        void nativeAd(adSlot, () => { if (token === adToken) adBox.hidden = true; }).then((cleanup) => {
+          if (token === adToken) adCleanup = cleanup;
+          else cleanup();
+        });
+      }
       againBtn.focus({ preventScroll: true });
     },
     showRevive(info, handlers) {

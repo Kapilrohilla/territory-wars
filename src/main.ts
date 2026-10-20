@@ -3,9 +3,12 @@ import { playSound, unlockAudio } from './game/sound';
 import { PALETTE } from './game/palette';
 import { DIFFICULTIES, type Difficulty } from './sim/config';
 import { loadBest, recordRun } from './ui/best';
-import { cleanName, createScreens, DEFAULT_NAME, type StartPrefs } from './ui/screens';
-import { initAds, showRewarded } from './native/ads';
-import { initApp } from './native/platform';
+import {
+  loadAdUnlocks, loadLifetime, loadSkin, newlyUnlocked, recordRevive, recordRound, saveAdUnlock, saveSkin,
+} from './ui/progress';
+import { cleanName, createScreens, DEFAULT_NAME, type StartPrefs, type Tab } from './ui/screens';
+import { attachNativeAd, initAds, privacyOptionsRequired, showPrivacyOptions, showRewarded } from './native/ads';
+import { initApp, isNative } from './native/platform';
 
 const HUD_INTERVAL_MS = 100;
 const NAME_KEY = 'territory-wars.name';
@@ -41,7 +44,7 @@ function savePrefs(p: StartPrefs): void {
 // start → playing → over → start. Each game gets a fresh, one-shot session;
 // the previous one stays painted behind the start screen until replaced.
 let session: Session | null = null;
-let screen: 'home' | 'records' | 'playing' | 'over' = 'home';
+let screen: 'home' | 'skins' | 'records' | 'playing' | 'over' = 'home';
 let hudTimer: ReturnType<typeof setInterval> | null = null;
 let hudFrame: number | null = null;
 
@@ -65,32 +68,82 @@ function refreshHud(world: Session['world']): void {
   if (ui.updateHud(world, performance.now())) animateHud();
 }
 
+function go(tab: Tab): void {
+  if (tab === 'skins') toSkins();
+  else if (tab === 'records') toRecords();
+  else toStart();
+}
+
 function toStart(): void {
   screen = 'home';
   ui.showStart(loadPrefs(), loadBest, (prefs) => {
     unlockAudio(); // inside the click gesture
     savePrefs(prefs);
     play(prefs);
-  }, (prefs) => {
+  }, (tab, prefs) => {
     savePrefs(prefs); // keep the picks for the way back
-    toRecords();
+    go(tab);
   });
 }
 
 function toRecords(): void {
   screen = 'records';
-  ui.showRecords(loadBest, toStart);
+  ui.showRecords({
+    bestFor: loadBest,
+    lifetime: loadLifetime(),
+    native: isNative,
+    openPrivacy: async () => (await privacyOptionsRequired()) && showPrivacyOptions(),
+  }, go);
 }
+
+function toSkins(): void {
+  screen = 'skins';
+  const lifetime = loadLifetime();
+  const adUnlocks = loadAdUnlocks();
+  ui.showSkins({
+    colors: PALETTE.players[loadPrefs().color],
+    selected: loadSkin(lifetime, adUnlocks).id,
+    lifetime,
+    adUnlocks,
+    native: isNative,
+    select: saveSkin,
+    unlockWithAd: async (id) => {
+      const ok = await showRewarded(); // free in a browser
+      if (ok) saveAdUnlock(id);
+      return ok;
+    },
+  }, go);
+}
+
+/** Pauses the running round and opens the pause menu (no-op when it can't pause). */
+function pauseGame(): void {
+  const s = session;
+  if (screen !== 'playing' || !s || !s.pause()) return;
+  ui.showPause({
+    resume: () => s.resume(),
+    restart: () => play(lastPrefs!),
+    home: () => {
+      stopHud();
+      s.dispose();
+      toStart();
+    },
+  });
+}
+
+let lastPrefs: StartPrefs | null = null;
 
 function play(prefs: StartPrefs): void {
   stopHud();
   session?.dispose();
   screen = 'playing';
-  ui.showHud(); // before the session so the minimap has its CSS size
+  lastPrefs = prefs;
+  ui.showHud(pauseGame); // before the session so the minimap has its CSS size
+  const lifetimeBefore = loadLifetime();
   const s = createSession(canvas, {
     minimap: ui.minimap,
     humanName: prefs.name,
     humanColor: prefs.color,
+    humanSkin: loadSkin(lifetimeBefore, loadAdUnlocks()).id,
     difficulty: prefs.difficulty,
     requestRevive: showRewarded, // a rewarded ad in the app; free in a browser
     onDown: (world, killerName) => {
@@ -103,7 +156,11 @@ function play(prefs: StartPrefs): void {
         kills: human.kills,
         time: world.time,
       }, {
-        revive: () => s.revive(),
+        revive: async () => {
+          const ok = await s.revive();
+          if (ok) recordRevive();
+          return ok;
+        },
         giveUp: () => s.giveUp(),
       });
     },
@@ -116,10 +173,13 @@ function play(prefs: StartPrefs): void {
       const newBest = recordRun(run, prefs.difficulty);
       if (newBest) setTimeout(() => playSound('newBest'), 450);
       const best = loadBest(prefs.difficulty);
-      ui.showOver({ ...run, won: world.won, newBest, difficulty: prefs.difficulty, best }, () => {
+      // Against the start of the round, so a revive that unlocked a skin mid-round counts too.
+      const after = recordRound({ kills: run.kills, pct: run.pct, won: world.won });
+      const unlocked = newlyUnlocked(lifetimeBefore, after).map((k) => k.name);
+      ui.showOver({ ...run, won: world.won, newBest, difficulty: prefs.difficulty, best, unlocked }, () => {
         unlockAudio();
         play(prefs);
-      }, toStart);
+      }, toStart, isNative ? attachNativeAd : undefined);
     },
   });
   session = s;
@@ -127,18 +187,32 @@ function play(prefs: StartPrefs): void {
   refreshHud(s.world);
   // Frozen once over (or knocked out), so the death-shrink tail doesn't read as 0%.
   hudTimer = setInterval(() => {
-    if (!s.world.over && !s.world.awaitingRevive) refreshHud(s.world);
+    if (!s.world.over && !s.world.awaitingRevive && !s.paused) refreshHud(s.world);
   }, HUD_INTERVAL_MS);
   s.start();
 }
 
 toStart();
 
+// Leaving the app or tab mid-round opens the pause menu, so nobody comes back to a death.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) pauseGame();
+});
+
 void initApp({
-  // Back: results or records → home; ignored mid-game; on home it quits the app.
+  // Back: skins, records or results → home; mid-game it pauses (or resumes); on home it quits.
   onBack: () => {
-    if (screen === 'over' || screen === 'records') { toStart(); return true; }
-    return screen === 'playing';
+    if (screen === 'over' || screen === 'records' || screen === 'skins') { toStart(); return true; }
+    if (screen === 'playing') {
+      if (session?.paused) {
+        ui.hidePause();
+        session.resume();
+      } else {
+        pauseGame();
+      }
+      return true;
+    }
+    return false;
   },
   onResume: unlockAudio,
 });

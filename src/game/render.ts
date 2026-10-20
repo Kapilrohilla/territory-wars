@@ -3,6 +3,8 @@ import { angleDiff, type MultiPoly, type Vec } from '../sim/geometry';
 import type { Player, World } from '../sim/types';
 import type { Camera } from './camera';
 import type { Effects } from './effects';
+import { drawFace, drawFaceBack } from './faces';
+import type { Face } from './skins';
 import { PALETTE } from './palette';
 
 export const LIP_OFFSET = 0.35;
@@ -17,6 +19,8 @@ const NAME_OFFSET = 1.5;
 export type Fx = {
   /** Each player's heading before the latest step, for interpolation. */
   prevHeading: Map<number, number>;
+  /** The face each head shows this frame (skin + mood); faceless heads when unset. */
+  faceOf?: (p: Player) => Face;
 };
 
 export function createFx(): Fx {
@@ -409,13 +413,21 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
-function drawHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: number): void {
+function drawHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: number, face?: Face): void {
   const c = colors(p);
   const h = HEAD_SIZE / 2;
+  // A faced head stays upright so the face reads; its eyes look along the heading.
+  const turn = face ? 0 : heading;
+  if (face) {
+    ctx.save();
+    ctx.translate(head.x, head.y);
+    drawFaceBack(ctx, face, HEAD_SIZE, c);
+    ctx.restore();
+  }
   // Side face: same square shifted down, darkened.
   ctx.save();
   ctx.translate(head.x, head.y + HEAD_SIDE);
-  ctx.rotate(heading);
+  ctx.rotate(turn);
   roundRect(ctx, -h, -h, HEAD_SIZE, HEAD_SIZE, HEAD_RADIUS);
   ctx.fillStyle = c.lip;
   ctx.fill();
@@ -425,10 +437,11 @@ function drawHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: 
   // Top face.
   ctx.save();
   ctx.translate(head.x, head.y);
-  ctx.rotate(heading);
+  ctx.rotate(turn);
   roundRect(ctx, -h, -h, HEAD_SIZE, HEAD_SIZE, HEAD_RADIUS);
   ctx.fillStyle = c.lip;
   ctx.fill();
+  if (face) drawFace(ctx, face, HEAD_SIZE, { x: Math.cos(heading), y: Math.sin(heading) });
   ctx.restore();
 }
 
@@ -591,7 +604,7 @@ export function render(
       drawShield(ctx, humanHead, human.protectedUntil - world.time, world.time, reduced);
     }
     ctx.globalAlpha = headAlpha(world, p, reduced);
-    drawHead(ctx, p, heads.get(p.id)!, interpHeading(fx, p, alpha));
+    drawHead(ctx, p, heads.get(p.id)!, interpHeading(fx, p, alpha), fx.faceOf?.(p));
   }
   ctx.globalAlpha = 1;
   effects?.drawWorldTop(ctx);
