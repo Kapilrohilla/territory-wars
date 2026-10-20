@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Territory Wars</string>
+    <string name="title_activity_main">Territory Wars</string>
+    <string name="package_name">com.kapilrohilla.territorywars</string>
+    <string name="custom_url_scheme">com.kapilrohilla.territorywars</string>
+    <!-- Google sample AdMob app id (test). Replace before release. -->
+    <string name="admob_app_id">ca-app-pub-3940256099942544~3347511713</string>
+</resources>

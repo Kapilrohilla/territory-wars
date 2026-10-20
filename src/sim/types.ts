@@ -49,11 +49,21 @@ export type Burn = { s0: number; back: number; front: number } & Credit;
  */
 export type DeathCause = 'trail' | 'self' | 'headon' | 'captured';
 
+export type Stolen = { playerId: number; pct: number };
+
 export type GameEvent =
-  | { type: 'capture'; playerId: number; gainedPct: number; region: MultiPoly }
+  /**
+   * `playerId` closed a loop. `stolen` lists, per rival, the share of the arena (in %)
+   * that this capture took from it; it is empty for a capture of empty ground.
+   */
+  | { type: 'capture'; playerId: number; gainedPct: number; region: MultiPoly; stolen: Stolen[] }
+  /** A burning player got back to its own land: the burn is cancelled. */
+  | { type: 'escape'; playerId: number }
   | { type: 'death'; playerId: number; killerId: number | null; cause: DeathCause }
   /** The human was knocked out but may still be revived (the world is frozen meanwhile). */
   | { type: 'down'; playerId: number; killerId: number | null; cause: DeathCause }
+  /** `hitterId` crossed `victimId`'s trail, which starts burning toward its owner. */
+  | { type: 'cut'; hitterId: number; victimId: number }
   | { type: 'win' }
   | { type: 'gameover' };
 
