@@ -8,7 +8,8 @@ import type { DeathCause, Player, World } from '../sim/types';
 import type { BestScore } from './best';
 import { button, el, icon, labelRow, setText, statTile, svg, type IconName } from './dom';
 import type { Lifetime } from './progress';
-import { createSkinsScreen, type SkinsView } from './skinsScreen';
+import { createSkinsScreen, paintSkin, type SkinsView } from './skinsScreen';
+import type { Skin } from '../game/skins';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -174,7 +175,7 @@ export const HINT_SECONDS = 8;
 
 // ---------- DOM ----------
 
-export type StartPrefs = { name: string; color: number; difficulty: Difficulty };
+export type StartPrefs = { name: string; difficulty: Difficulty };
 export type OverStats = {
   won: boolean; pct: number; kills: number; time: number; newBest: boolean; difficulty: Difficulty;
   /** Best for this difficulty after the run was recorded. */
@@ -226,11 +227,12 @@ export type ReviveHandlers = {
 
 export type Screens = {
   /**
-   * Home screen: best score (for the selected difficulty), name, colour, difficulty and Play.
-   * The tab bar calls onTab with the prefs as currently picked.
+   * Home screen: best score (for the selected difficulty), name, the equipped skin (its
+   * colour included), difficulty and Play. The tab bar calls onTab with the prefs as picked.
    */
   showStart(
     prefs: StartPrefs,
+    skin: Skin,
     bestFor: (difficulty: Difficulty) => BestScore | null,
     onPlay: (prefs: StartPrefs) => void,
     onTab: (tab: Tab, prefs: StartPrefs) => void,
@@ -313,23 +315,16 @@ export function createScreens(root: HTMLElement): Screens {
   nameField.append(icon('id', 'tw-field-icon'), nameInput, diceBtn);
   startCard.append(labelRow('Your name', el('span', 'tw-label-aside', `max ${NAME_MAX} chars`), 'tw-name'), nameField);
 
+  // The equipped skin sets the colour too; it is changed on the Skins tab, never here.
   const colorName = el('span', 'tw-label-aside tw-color-name');
-  const swatches = el('div', 'tw-swatches');
-  swatches.setAttribute('role', 'radiogroup');
-  swatches.setAttribute('aria-label', 'Colour');
-  const swatchBtns = PALETTE.players.map((c, i) => {
-    const b = button('tw-swatch');
-    b.setAttribute('role', 'radio');
-    b.setAttribute('aria-label', COLOR_NAMES[i] ?? `Colour ${i + 1}`);
-    const dot = el('span', 'tw-swatch-dot');
-    dot.style.setProperty('--c', c.base);
-    dot.style.setProperty('--lip', c.lip);
-    dot.append(icon('check', 'tw-swatch-check'));
-    b.append(dot);
-    swatches.append(b);
-    return b;
-  });
-  startCard.append(labelRow('Colour', colorName), swatches);
+  const skinRow = button('tw-skin-row');
+  const skinCanvas = el('canvas', 'tw-skin-row-canvas');
+  skinCanvas.setAttribute('aria-hidden', 'true');
+  const skinName = el('span', 'tw-skin-row-name');
+  const skinChange = el('span', 'tw-skin-row-change');
+  skinChange.append(el('span', undefined, 'Change'), icon('chevron'));
+  skinRow.append(skinCanvas, skinName, skinChange);
+  startCard.append(labelRow('Skin', colorName), skinRow);
 
   const diffGroup = el('div', 'tw-segments');
   diffGroup.setAttribute('role', 'radiogroup');
@@ -348,7 +343,6 @@ export function createScreens(root: HTMLElement): Screens {
   startWrap.append(startCard);
   start.append(startWrap);
 
-  let chosen = 0;
   let chosenDiff: Difficulty = 'normal';
   let bestForCb: (d: Difficulty) => BestScore | null = () => null;
   const showBest = (best: BestScore | null) => {
@@ -388,28 +382,16 @@ export function createScreens(root: HTMLElement): Screens {
   });
   let onPlayCb: ((p: StartPrefs) => void) | null = null;
   let onStartTab: ((t: Tab, p: StartPrefs) => void) | null = null;
-  const pick = (i: number) => {
-    chosen = i;
-    swatchBtns.forEach((b, j) => {
-      b.setAttribute('aria-checked', String(j === i));
-      b.tabIndex = j === i ? 0 : -1;
-    });
-    const c = PALETTE.players[i];
-    setText(colorName, COLOR_NAMES[i] ?? '');
+  const showSkin = (skin: Skin) => {
+    const c = PALETTE.players[skin.color];
+    paintSkin(skinCanvas, skin, 'idle', 52);
+    setText(skinName, skin.name);
+    setText(colorName, COLOR_NAMES[skin.color] ?? '');
+    skinRow.setAttribute('aria-label', `Skin: ${skin.name}, ${COLOR_NAMES[skin.color] ?? ''}. Change skin`);
     playBtn.style.setProperty('--btn', c.base);
     playBtn.style.setProperty('--btn-lip', c.lip);
   };
-  swatchBtns.forEach((b, i) => b.addEventListener('click', () => { unlockAudio(); playTick(); pick(i); }));
-  swatches.addEventListener('keydown', (e) => {
-    const d = arrowStep(e);
-    if (!d) return;
-    e.preventDefault();
-    const n = swatchBtns.length;
-    const i = (chosen + d + n) % n;
-    pick(i);
-    swatchBtns[i].focus();
-  });
-  const currentPrefs = (): StartPrefs => ({ name: cleanName(nameInput.value), color: chosen, difficulty: chosenDiff });
+  const currentPrefs = (): StartPrefs => ({ name: cleanName(nameInput.value), difficulty: chosenDiff });
   const submit = () => {
     if (!onPlayCb) return;
     const cb = onPlayCb;
@@ -417,6 +399,14 @@ export function createScreens(root: HTMLElement): Screens {
     cb(currentPrefs());
   };
   playBtn.addEventListener('click', submit);
+  skinRow.addEventListener('click', () => {
+    const cb = onStartTab;
+    if (!cb) return;
+    onPlayCb = onStartTab = null;
+    unlockAudio();
+    playTick();
+    cb('skins', currentPrefs());
+  });
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
   // ----- records & settings -----
@@ -899,11 +889,11 @@ export function createScreens(root: HTMLElement): Screens {
 
   return {
     minimap,
-    showStart(prefs, bestFor, onPlay, onTab) {
+    showStart(prefs, skin, bestFor, onPlay, onTab) {
       bestForCb = bestFor;
       pickDiff(prefs.difficulty);
       nameInput.value = prefs.name;
-      pick(((prefs.color % swatchBtns.length) + swatchBtns.length) % swatchBtns.length);
+      showSkin(skin);
       onPlayCb = onPlay;
       onStartTab = onTab;
       only(start);
@@ -912,7 +902,6 @@ export function createScreens(root: HTMLElement): Screens {
         onPlayCb = onStartTab = null;
         cb?.(t, currentPrefs());
       });
-      swatchBtns[chosen].scrollIntoView?.({ block: 'nearest', inline: 'center' });
       start.scrollTop = 0;
       playBtn.focus({ preventScroll: true });
     },

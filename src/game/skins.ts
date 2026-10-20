@@ -1,5 +1,6 @@
 /**
- * Skins are faces drawn on a player's head; the player's colour stays its own.
+ * A skin is a player's whole look: its colour (an index into PALETTE.players) and the
+ * face drawn on its head. Colours are never picked separately; each skin owns one.
  * A face is plain data (eyes, mouth, brows, extras), so a skin's look and how it
  * reacts to each mood can be tuned here without touching the renderer.
  */
@@ -36,6 +37,8 @@ export type Unlock =
 export type Skin = {
   id: string;
   name: string;
+  /** Palette index (PALETTE.players); unique per skin. */
+  color: number;
   face: Face;
   /** Face parts this skin keeps in every mood (e.g. sunglasses stay on). */
   keep?: readonly (keyof Face)[];
@@ -56,24 +59,24 @@ export const MOOD_FACE: Record<Mood, Partial<Face>> = {
 const face = (f: Partial<Face> & Pick<Face, 'eyes' | 'mouth'>): Face => ({ brows: 'none', extras: [], ...f });
 
 export const SKINS: readonly Skin[] = [
-  { id: 'classic', name: 'Classic', face: face({ eyes: 'dot', mouth: 'smile', extras: ['blush'] }), unlock: { kind: 'free' } },
-  { id: 'grumpy', name: 'Grumpy', face: face({ eyes: 'dot', mouth: 'frown', brows: 'angry' }), unlock: { kind: 'free' },
+  { id: 'classic', color: 8, name: 'Classic', face: face({ eyes: 'dot', mouth: 'smile', extras: ['blush'] }), unlock: { kind: 'free' } },
+  { id: 'grumpy', color: 1, name: 'Grumpy', face: face({ eyes: 'dot', mouth: 'frown', brows: 'angry' }), unlock: { kind: 'free' },
     moods: { happy: { mouth: 'flat' } } },
-  { id: 'sleepy', name: 'Sleepy', face: face({ eyes: 'sleepy', mouth: 'o' }), unlock: { kind: 'free' } },
-  { id: 'cool', name: 'Cool', face: face({ eyes: 'shades', mouth: 'grin' }), keep: ['eyes'], unlock: { kind: 'ad' } },
-  { id: 'kitty', name: 'Kitty', face: face({ eyes: 'round', mouth: 'cat', extras: ['ears', 'whiskers', 'blush'] }),
+  { id: 'sleepy', color: 9, name: 'Sleepy', face: face({ eyes: 'sleepy', mouth: 'o' }), unlock: { kind: 'free' } },
+  { id: 'cool', color: 7, name: 'Cool', face: face({ eyes: 'shades', mouth: 'grin' }), keep: ['eyes'], unlock: { kind: 'ad' } },
+  { id: 'kitty', color: 12, name: 'Kitty', face: face({ eyes: 'round', mouth: 'cat', extras: ['ears', 'whiskers', 'blush'] }),
     unlock: { kind: 'ad' } },
-  { id: 'bot', name: 'Bot', face: face({ eyes: 'square', mouth: 'flat', extras: ['antenna'] }), keep: ['eyes'],
+  { id: 'bot', color: 6, name: 'Bot', face: face({ eyes: 'square', mouth: 'flat', extras: ['antenna'] }), keep: ['eyes'],
     unlock: { kind: 'ad' } },
-  { id: 'cyclops', name: 'Cyclops', face: face({ eyes: 'cyclops', mouth: 'grin' }), keep: ['eyes'],
+  { id: 'cyclops', color: 4, name: 'Cyclops', face: face({ eyes: 'cyclops', mouth: 'grin' }), keep: ['eyes'],
     unlock: { kind: 'achievement', id: 'kills10' } },
-  { id: 'devil', name: 'Imp', face: face({ eyes: 'dot', mouth: 'fang', brows: 'angry', extras: ['horns'] }),
+  { id: 'devil', color: 0, name: 'Imp', face: face({ eyes: 'dot', mouth: 'fang', brows: 'angry', extras: ['horns'] }),
     unlock: { kind: 'achievement', id: 'roundKills5' } },
-  { id: 'star', name: 'Starry', face: face({ eyes: 'star', mouth: 'smile', extras: ['blush'] }),
+  { id: 'star', color: 2, name: 'Starry', face: face({ eyes: 'star', mouth: 'smile', extras: ['blush'] }),
     unlock: { kind: 'achievement', id: 'pct25' } },
-  { id: 'phoenix', name: 'Comeback', face: face({ eyes: 'round', mouth: 'grin', extras: ['tear'] }),
+  { id: 'phoenix', color: 5, name: 'Comeback', face: face({ eyes: 'round', mouth: 'grin', extras: ['tear'] }),
     moods: { idle: { mouth: 'smile' } }, unlock: { kind: 'achievement', id: 'revives3' } },
-  { id: 'royal', name: 'Royal', face: face({ eyes: 'dot', mouth: 'smile', extras: ['crown', 'blush'] }),
+  { id: 'royal', color: 10, name: 'Royal', face: face({ eyes: 'dot', mouth: 'smile', extras: ['crown', 'blush'] }),
     unlock: { kind: 'achievement', id: 'win' } },
 ];
 
@@ -95,8 +98,18 @@ export function faceFor(skin: Skin, mood: Mood): Face {
   return { ...skin.face, ...shared, ...own, extras: [...new Set(extras)] };
 }
 
-/** A bot's skin: any skin (locked ones too, as a preview of what can be earned), stable per id and seed. */
-export function botSkin(playerId: number, seed: number): Skin {
+/** The skin that owns palette colour `color`, if any. */
+export function skinForColor(color: number): Skin | undefined {
+  return SKINS.find((s) => s.color === color);
+}
+
+/**
+ * A bot's look. Bots get distinct colours from the world (never the human's), so a bot
+ * wears the skin of its colour; a colour no skin owns gets a face picked by id and seed.
+ */
+export function botSkin(playerId: number, colorIndex: number, seed: number): Skin {
+  const own = skinForColor(colorIndex);
+  if (own) return own;
   const h = Math.imul((playerId + 1) ^ seed, 2654435761) >>> 0;
-  return SKINS[h % SKINS.length];
+  return { ...SKINS[h % SKINS.length], color: colorIndex };
 }

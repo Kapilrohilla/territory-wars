@@ -333,52 +333,34 @@ button:focus-visible,
 .tw-dice:hover { background: rgba(52, 50, 63, 0.06); }
 .tw-dice:active .tw-icon { transform: rotate(20deg); }
 
-/* 13 colours in one row that scrolls sideways; the edge fade hints there are more. */
-.tw-swatches {
+/* Equipped skin (colour + face); tapping it opens the Skins tab. */
+.tw-skin-row {
   display: flex;
-  gap: 4px;
-  margin: 0 -6px;
-  padding: 4px 6px 8px;
-  overflow-x: auto;
-  scroll-snap-type: x proximity;
-  scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(90deg, #000 88%, transparent);
-  mask-image: linear-gradient(90deg, #000 88%, transparent);
-}
-.tw-swatches::-webkit-scrollbar { display: none; }
-.tw-swatch {
-  flex: none;
-  width: 52px;
-  height: 56px;
-  padding: 0;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 6px 14px 6px 8px;
   border: 0;
-  border-radius: 50%;
-  background: transparent;
+  border-radius: 18px;
+  background: var(--field);
+  color: var(--ink);
+  text-align: left;
   cursor: pointer;
-  scroll-snap-align: start;
-  display: flex;
+}
+.tw-skin-row-canvas { flex: none; width: 52px; height: 52px; }
+.tw-skin-row-name { flex: 1; min-width: 0; font: 800 20px var(--font-display); }
+.tw-skin-row-change {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 2px;
+  font: 800 13px var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
 }
-.tw-swatch-dot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: var(--c);
-  box-shadow: 0 4px 0 var(--lip);
-  transition: transform 120ms ease;
-}
-.tw-swatch:hover .tw-swatch-dot { transform: translateY(-1px); }
-.tw-swatch-check { width: 20px; height: 20px; color: var(--ink); opacity: 0; }
-.tw-swatch[aria-checked="true"] .tw-swatch-dot {
-  box-shadow: 0 0 0 3px var(--card), 0 0 0 6px var(--ink);
-}
-.tw-swatch[aria-checked="true"] .tw-swatch-check { opacity: 1; }
-.tw-swatch:focus-visible { box-shadow: none; }
-.tw-swatch:focus-visible .tw-swatch-dot { box-shadow: 0 0 0 3px var(--card), 0 0 0 6px var(--periwinkle-lip); }
+.tw-skin-row-change .tw-icon { width: 18px; height: 18px; }
+.tw-skin-row:hover .tw-skin-row-change { color: var(--ink); }
 
 .tw-segments {
   display: grid;
@@ -1107,6 +1089,12 @@ button:focus-visible,
 .tw-skin-hero-canvas { flex: none; width: 112px; height: 112px; border-radius: 20px; background: var(--arena); }
 .tw-skin-hero-text { flex: 1; min-width: 0; }
 .tw-skin-hero-name { font: 900 24px var(--font-display); }
+.tw-skin-hero-color {
+  font: 800 12px var(--font-display);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
 .tw-skin-hero-note { margin: 2px 0 8px; font-size: 14px; font-weight: 600; color: var(--ink-muted); }
 .tw-moods { display: flex; flex-wrap: wrap; gap: 6px; }
 .tw-mood {

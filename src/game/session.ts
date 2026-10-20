@@ -18,7 +18,7 @@ export type SessionOpts = {
   seed?: number;
   humanName?: string;
   humanColor?: number;
-  /** Skin id for the human's face (see skins.ts); bots get theirs from the seed. */
+  /** The human's skin id (see skins.ts); it sets the colour too, overriding humanColor. */
   humanSkin?: string;
   difficulty?: Difficulty;
   /**
@@ -76,7 +76,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const world = createWorld({
     seed,
     humanName: opts.humanName ?? 'You',
-    humanColor: opts.humanColor ?? 0,
+    humanColor: opts.humanSkin !== undefined ? skinById(opts.humanSkin).color : opts.humanColor ?? 0,
     difficulty: opts.difficulty ?? 'normal',
   });
   const brains = createBrains(world);
@@ -89,7 +89,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const fx = createFx();
   const moods = createMoodState();
   const humanSkin = skinById(opts.humanSkin);
-  const skins = world.players.map((p) => (p.isHuman ? humanSkin : botSkin(p.id, seed)));
+  const skins = world.players.map((p) => (p.isHuman ? humanSkin : botSkin(p.id, p.colorIndex, seed)));
   fx.faceOf = (p) => faceFor(skins[p.id] ?? humanSkin, moodOf(p, world, moods));
   const effects = createEffects();
   const input = createInput(canvas);

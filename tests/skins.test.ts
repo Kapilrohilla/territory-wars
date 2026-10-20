@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { botSkin, DEFAULT_SKIN, faceFor, MOODS, SKINS, skinById } from '../src/game/skins';
+import { botSkin, DEFAULT_SKIN, faceFor, MOODS, SKINS, skinById, skinForColor } from '../src/game/skins';
+import { PALETTE } from '../src/game/palette';
 import { createMoodState, moodEvents, moodOf, MOOD_SECONDS } from '../src/game/moods';
 import type { GameEvent, World } from '../src/sim/types';
 
@@ -33,10 +34,20 @@ describe('skins', () => {
     for (const s of SKINS) for (const m of MOODS) expect(faceFor(s, m).eyes).toBeTruthy();
   });
 
-  it('picks bot skins deterministically', () => {
-    expect(botSkin(3, 42)).toBe(botSkin(3, 42));
-    const ids = new Set(Array.from({ length: 12 }, (_, i) => botSkin(i + 1, 7).id));
-    expect(ids.size).toBeGreaterThan(3);
+  it('gives every skin its own valid colour', () => {
+    const colors = SKINS.map((s) => s.color);
+    expect(new Set(colors).size).toBe(SKINS.length);
+    for (const c of colors) expect(c >= 0 && c < PALETTE.players.length).toBe(true);
+  });
+
+  it('dresses a bot in the skin of its colour, or a stable face in its own colour', () => {
+    const kitty = skinById('kitty');
+    expect(botSkin(3, kitty.color, 42)).toBe(kitty);
+    const spare = PALETTE.players.findIndex((_, i) => !skinForColor(i));
+    expect(spare).toBeGreaterThanOrEqual(0);
+    const b = botSkin(3, spare, 42);
+    expect(b.color).toBe(spare);
+    expect(botSkin(3, spare, 42).id).toBe(b.id);
   });
 });
 

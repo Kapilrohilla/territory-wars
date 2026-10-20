@@ -1,11 +1,10 @@
-import { drawFace, drawFaceBack, type FaceColors } from '../game/faces';
+import { drawFace, drawFaceBack } from '../game/faces';
+import { COLOR_NAMES, PALETTE } from '../game/palette';
 import { faceFor, MOODS, SKINS, skinById, type Mood, type Skin } from '../game/skins';
 import { button, el, icon, setText } from './dom';
 import { ACHIEVEMENTS, isUnlocked, type Lifetime } from './progress';
 
 export type SkinsView = {
-  /** The player's colour, so previews match their block. */
-  colors: FaceColors;
   /** Equipped skin id. */
   selected: string;
   lifetime: Lifetime;
@@ -28,8 +27,9 @@ export function skinState(skin: Skin, view: Pick<SkinsView, 'selected' | 'lifeti
   return skin.unlock.kind === 'ad' ? 'ad' : 'locked';
 }
 
-/** Paints a block head with `skin`'s face in `mood` onto a square canvas of `cssSize` px. */
-export function paintSkin(canvas: HTMLCanvasElement, skin: Skin, mood: Mood, colors: FaceColors, cssSize: number): void {
+/** Paints `skin` (its colour and its face in `mood`) onto a square canvas of `cssSize` px. */
+export function paintSkin(canvas: HTMLCanvasElement, skin: Skin, mood: Mood, cssSize: number): void {
+  const colors = PALETTE.players[skin.color % PALETTE.players.length];
   const dpr = Math.min(3, globalThis.devicePixelRatio || 1);
   const px = Math.round(cssSize * dpr);
   if (canvas.width !== px) canvas.width = canvas.height = px;
@@ -53,8 +53,9 @@ export function paintSkin(canvas: HTMLCanvasElement, skin: Skin, mood: Mood, col
   ctx.fill();
   ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
   ctx.fill();
+  // The top face shows the skin's main colour so the swatch reads true; the side keeps the lip.
   square(0);
-  ctx.fillStyle = colors.lip;
+  ctx.fillStyle = colors.base;
   ctx.fill();
   drawFace(ctx, face, u, { x: 0, y: 0.4 });
 }
@@ -72,7 +73,7 @@ export function createSkinsScreen(onBack: () => void): { root: HTMLElement; show
   const titles = el('div', 'tw-page-titles');
   const title = el('h2', 'tw-page-title', 'Skins');
   title.id = 'tw-skins-title';
-  titles.append(title, el('div', 'tw-page-sub', 'Faces for your block'));
+  titles.append(title, el('div', 'tw-page-sub', 'Colour and face, together'));
   head.append(backBtn, titles);
 
   // Big preview of one skin, with mood chips to see how its face reacts in play.
@@ -81,6 +82,7 @@ export function createSkinsScreen(onBack: () => void): { root: HTMLElement; show
   heroCanvas.setAttribute('role', 'img');
   const heroText = el('div', 'tw-skin-hero-text');
   const heroName = el('div', 'tw-skin-hero-name');
+  const heroColor = el('div', 'tw-skin-hero-color');
   const heroNote = el('div', 'tw-skin-hero-note');
   const moodGroup = el('div', 'tw-moods');
   moodGroup.setAttribute('role', 'radiogroup');
@@ -91,7 +93,7 @@ export function createSkinsScreen(onBack: () => void): { root: HTMLElement; show
     moodGroup.append(b);
     return b;
   });
-  heroText.append(heroName, heroNote, moodGroup);
+  heroText.append(heroColor, heroName, heroNote, moodGroup);
   hero.append(heroCanvas, heroText);
 
   const note = el('p', 'tw-skins-note');
@@ -109,9 +111,10 @@ export function createSkinsScreen(onBack: () => void): { root: HTMLElement; show
   const paintHero = () => {
     if (!view) return;
     const s = skinById(previewId);
-    paintSkin(heroCanvas, s, mood, view.colors, 112);
+    paintSkin(heroCanvas, s, mood, 112);
     heroCanvas.setAttribute('aria-label', `${s.name} skin, ${MOOD_LABEL[mood].toLowerCase()} face`);
     setText(heroName, s.name);
+    setText(heroColor, COLOR_NAMES[s.color] ?? '');
     const st = skinState(s, view);
     setText(heroNote, st === 'equipped' ? 'Equipped' : st === 'unlocked' ? 'Unlocked'
       : st === 'ad' ? 'Unlock with a short ad'
@@ -146,7 +149,7 @@ export function createSkinsScreen(onBack: () => void): { root: HTMLElement; show
       face.setAttribute('aria-label', `Preview ${s.name}`);
       face.setAttribute('aria-pressed', String(s.id === previewId));
       const c = el('canvas');
-      paintSkin(c, s, 'idle', v.colors, 72);
+      paintSkin(c, s, 'idle', 72);
       face.append(c);
       if (st === 'locked') face.append(icon('lock', 'tw-skin-lock'));
       face.addEventListener('click', () => { previewId = s.id; render(); });

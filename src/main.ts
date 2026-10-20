@@ -1,6 +1,5 @@
 import { createSession, type Session } from './game/session';
 import { playSound, unlockAudio } from './game/sound';
-import { PALETTE } from './game/palette';
 import { DIFFICULTIES, type Difficulty } from './sim/config';
 import { loadBest, recordRun } from './ui/best';
 import {
@@ -12,7 +11,6 @@ import { initApp, isNative } from './native/platform';
 
 const HUD_INTERVAL_MS = 100;
 const NAME_KEY = 'territory-wars.name';
-const COLOR_KEY = 'territory-wars.color';
 const DIFFICULTY_KEY = 'territory-wars.difficulty';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -20,23 +18,19 @@ const ui = createScreens(document.getElementById('ui') as HTMLElement);
 
 function loadPrefs(): StartPrefs {
   let name = DEFAULT_NAME;
-  let color = 0;
   let difficulty: Difficulty = 'normal';
   try {
     const n = localStorage.getItem(NAME_KEY);
     if (n) name = cleanName(n);
-    const c = Number(localStorage.getItem(COLOR_KEY));
-    if (Number.isInteger(c) && c >= 0 && c < PALETTE.players.length) color = c;
     const d = localStorage.getItem(DIFFICULTY_KEY) as Difficulty | null;
     if (d && DIFFICULTIES.includes(d)) difficulty = d;
   } catch { /* storage unavailable */ }
-  return { name, color, difficulty };
+  return { name, difficulty };
 }
 
 function savePrefs(p: StartPrefs): void {
   try {
     localStorage.setItem(NAME_KEY, p.name);
-    localStorage.setItem(COLOR_KEY, String(p.color));
     localStorage.setItem(DIFFICULTY_KEY, p.difficulty);
   } catch { /* storage unavailable */ }
 }
@@ -76,7 +70,7 @@ function go(tab: Tab): void {
 
 function toStart(): void {
   screen = 'home';
-  ui.showStart(loadPrefs(), loadBest, (prefs) => {
+  ui.showStart(loadPrefs(), loadSkin(loadLifetime(), loadAdUnlocks()), loadBest, (prefs) => {
     unlockAudio(); // inside the click gesture
     savePrefs(prefs);
     play(prefs);
@@ -101,7 +95,6 @@ function toSkins(): void {
   const lifetime = loadLifetime();
   const adUnlocks = loadAdUnlocks();
   ui.showSkins({
-    colors: PALETTE.players[loadPrefs().color],
     selected: loadSkin(lifetime, adUnlocks).id,
     lifetime,
     adUnlocks,
@@ -142,7 +135,6 @@ function play(prefs: StartPrefs): void {
   const s = createSession(canvas, {
     minimap: ui.minimap,
     humanName: prefs.name,
-    humanColor: prefs.color,
     humanSkin: loadSkin(lifetimeBefore, loadAdUnlocks()).id,
     difficulty: prefs.difficulty,
     requestRevive: showRewarded, // a rewarded ad in the app; free in a browser
