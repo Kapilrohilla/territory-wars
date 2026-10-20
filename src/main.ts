@@ -1,5 +1,5 @@
 import { createSession, type Session } from './game/session';
-import { unlockAudio } from './game/sound';
+import { playSound, unlockAudio } from './game/sound';
 import { PALETTE } from './game/palette';
 import { DIFFICULTIES, type Difficulty } from './sim/config';
 import { loadBest, recordRun } from './ui/best';
@@ -99,6 +99,7 @@ function play(prefs: StartPrefs): void {
       const human = world.players[world.humanId];
       const run = { pct: s.finalPct(), kills: human.kills, time: world.time };
       const newBest = recordRun(run, prefs.difficulty);
+      if (newBest) setTimeout(() => playSound('newBest'), 450);
       ui.showOver({ ...run, won: world.won, newBest, difficulty: prefs.difficulty }, () => {
         unlockAudio();
         play(prefs);
@@ -106,6 +107,7 @@ function play(prefs: StartPrefs): void {
     },
   });
   session = s;
+  playSound('start');
   refreshHud(s.world);
   // Frozen once over (or knocked out), so the death-shrink tail doesn't read as 0%.
   hudTimer = setInterval(() => {
