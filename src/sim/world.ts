@@ -6,13 +6,15 @@ import {
 import { captureLand, keepPiece, landArea, landContains, subtractLand } from './territory';
 import { mulberryNext } from './rng';
 import { NAMES } from './names';
-import type { Credit, DeathCause, GameEvent, Input, Player, World } from './types';
+import type { Credit, DeathCause, GameEvent, Input, Player, Stolen, World } from './types';
 
 export type { GameEvent, Input, Player, World } from './types';
 
 /** Number of player colours available (matches the 13-entry palette). */
 export const COLOR_COUNT = 13;
 const ARENA_AREA = Math.PI * CONFIG.ARENA_R * CONFIG.ARENA_R;
+/** Polygon-clipping slivers below this share of the arena (%) don't count as stolen land. */
+const STOLEN_EPS_PCT = 1e-6;
 const SPAWN_TRIES = 40;
 const SPAWN_CLEARANCE = 1.5;
 const MOVE_R = CONFIG.ARENA_R - CONFIG.WALL_PAD;
@@ -193,22 +195,28 @@ function capture(world: World, p: Player, pending: Pending) {
   const newLand = captureLand(oldLand, p.trail, nearWall ? ARENA_POLY : undefined);
   p.land = newLand;
   p.trail = [];
+  const escaped = p.burn !== null;
   p.burn = null; // made it home: the burn is cancelled
   const box = bbox(newLand);
+  const stolen: Stolen[] = [];
   // Only the newly gained region is lethal; enemies crossing old land are unaffected.
   const region = subtractLand(newLand, oldLand);
   for (const q of world.players) {
     if (q === p || !q.alive) continue;
     if (landContains(region, q.pos)) markDead(pending, q.id, p.id, 'captured');
     if (q.land.length === 0 || !boxesOverlap(box, bbox(q.land))) continue;
+    const had = landArea(q.land);
     q.land = keepPiece(subtractLand(q.land, newLand), q.pos);
+    const lost = ((had - landArea(q.land)) / ARENA_AREA) * 100;
+    if (lost > STOLEN_EPS_PCT) stolen.push({ playerId: q.id, pct: lost });
     if (q.land.length === 0) {
       // A protected player survives for now; killLandless finishes it when protection ends.
       q.landTakenBy = creditOf(world, p);
       markDead(pending, q.id, p.id, 'captured');
     }
   }
-  world.events.push({ type: 'capture', playerId: p.id, gainedPct: pct(world, p.id) - before, region });
+  world.events.push({ type: 'capture', playerId: p.id, gainedPct: pct(world, p.id) - before, region, stolen });
+  if (escaped) world.events.push({ type: 'escape', playerId: p.id });
 }
 
 /**

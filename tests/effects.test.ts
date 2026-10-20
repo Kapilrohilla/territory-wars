@@ -37,7 +37,7 @@ describe('createEffects', () => {
     const fx = createEffects();
     const cam = { nudge: vi.fn() };
     const region = square(0, 0, 2);
-    fx.onEvents([{ type: 'capture', playerId: world.humanId, gainedPct: 1.5, region }], world, cam);
+    fx.onEvents([{ type: 'capture', playerId: world.humanId, gainedPct: 1.5, region, stolen: [] }], world, cam);
     expect(cam.nudge).toHaveBeenCalledWith(0.3);
     expect(fx.landMask(world.humanId)).toEqual([region]);
     expect(fx.busy()).toBe(true);
@@ -52,7 +52,7 @@ describe('createEffects', () => {
     const world = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
     const fx = createEffects();
     const cam = { nudge: vi.fn() };
-    fx.onEvents([{ type: 'capture', playerId: 1, gainedPct: 2, region: square(0, 0, 1) }], world, cam);
+    fx.onEvents([{ type: 'capture', playerId: 1, gainedPct: 2, region: square(0, 0, 1), stolen: [] }], world, cam);
     expect(cam.nudge).not.toHaveBeenCalled();
     expect(fx.landMask(1)).toHaveLength(1);
   });
