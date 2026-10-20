@@ -152,6 +152,20 @@ describe('world', () => {
     expect(JSON.parse(JSON.stringify(w))).toEqual(w);
   });
 
+  it('a trail cut emits one cut event naming hitter and victim', () => {
+    const w = soloWorld();
+    const b = placeBot(w, v(5, 6), Math.PI / 2);
+    b.trail = [v(5, -5), v(5, 5)];
+    let cuts: unknown[] = [];
+    for (let i = 0; i < 60 && !b.burn; i++) {
+      step(w, NO_INPUT);
+      cuts = w.events.filter((e) => e.type === 'cut');
+    }
+    expect(cuts).toEqual([{ type: 'cut', hitterId: 0, victimId: b.id }]);
+    step(w, NO_INPUT); // already burning: no second cut
+    expect(w.events.some((e) => e.type === 'cut')).toBe(false);
+  });
+
   it('burn reaches head kills victim and credits killer', () => {
     const w = soloWorld();
     const b = placeBot(w, v(5, 6), Math.PI / 2);

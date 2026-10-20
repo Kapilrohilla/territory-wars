@@ -61,6 +61,7 @@ canvas#game {
 }
 
 .tw-card {
+  position: relative;
   width: min(100%, 420px);
   box-sizing: border-box;
   margin: auto;
@@ -469,6 +470,29 @@ canvas#game {
 .tw-row-pct { flex: none; font-weight: 600; }
 .tw-you { font-weight: 800; }
 .tw-you .tw-row-pct { font-weight: 800; }
+
+/* Sound toggle: top-right of the home card, bottom-left in game. */
+.tw-mute {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(52, 50, 63, 0.06);
+  font-size: 20px;
+  line-height: 44px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.tw-mute:focus-visible { outline: 3px solid var(--tw-ink); outline-offset: 2px; }
+.tw-mute-home { position: absolute; top: 12px; right: 12px; }
+.tw-mute-hud {
+  position: absolute;
+  left: max(10px, env(safe-area-inset-left));
+  bottom: max(10px, env(safe-area-inset-bottom));
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 2px 10px rgba(52, 50, 63, 0.1);
+}
 
 /* Whole-arena overview, bottom right. */
 .tw-minimap {

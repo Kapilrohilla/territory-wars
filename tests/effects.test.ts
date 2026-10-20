@@ -110,7 +110,7 @@ describe('cut sparks', () => {
     const world = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
     const fx = createEffects();
     burning(world);
-    const cut = { type: 'cut', hitterId: world.humanId, victimId: 1 } as unknown as Parameters<typeof fx.onEvents>[0][number];
+    const cut = { type: 'cut', hitterId: world.humanId, victimId: 1 } as const;
     fx.onEvents([cut], world, { nudge: vi.fn() });
     expect(fx.busy()).toBe(true);
     fx.update(1);

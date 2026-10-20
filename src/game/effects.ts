@@ -3,7 +3,7 @@ import type { MultiPoly, Vec } from '../sim/geometry';
 import type { Burn, GameEvent, World } from '../sim/types';
 import type { Camera } from './camera';
 import { LIP_OFFSET, landPath, playerColors, pointOnTrail } from './render';
-import { playPop } from './sound';
+import { vibrate } from '../native/platform';
 
 const CAPTURE_S = 0.2;
 const CAPTURE_SCALE0 = 1.04;
@@ -36,7 +36,7 @@ export type Effects = {
   onEvents(events: GameEvent[], world: World, cam: Pick<Camera, 'nudge'>): void;
   /**
    * Watches for rival trails the human has just set burning (a spark burst at the hit).
-   * The `cut` event does the same where the sim emits it; each burn sparks once either way.
+   * Backs up the `cut` event (each burn sparks once either way).
    */
   observe(world: World): void;
   update(dt: number): void;
@@ -159,11 +159,8 @@ export function createEffects(): Effects {
   return {
     onEvents(events, world, cam) {
       for (const e of events) {
-        // `cut` (a rival's trail set burning) only exists in newer sims; typed loosely so this
-        // compiles either way.
-        const ev = e as { type: string; victimId?: number };
-        if (ev.type === 'cut' && typeof ev.victimId === 'number') {
-          checkBurn(world, ev.victimId);
+        if (e.type === 'cut') {
+          checkBurn(world, e.victimId);
           continue;
         }
         if (e.type === 'capture') {
@@ -174,8 +171,7 @@ export function createEffects(): Effects {
           if (p.isHuman && e.gainedPct > 0) {
             texts.push({ text: formatGain(e.gainedPct), colorIndex: p.colorIndex, at: { x: p.pos.x, y: p.pos.y }, t: 0 });
             cam.nudge(NUDGE);
-            try { (globalThis.navigator as Navigator | undefined)?.vibrate?.(VIBRATE_MS); } catch { /* ignore */ }
-            playPop();
+            vibrate(VIBRATE_MS);
           }
         } else if (e.type === 'death') {
           const p = world.players[e.playerId];

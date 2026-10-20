@@ -1,9 +1,11 @@
 import { createSession, type Session } from './game/session';
-import { unlockAudio } from './game/sound';
+import { playSound, unlockAudio } from './game/sound';
 import { PALETTE } from './game/palette';
 import { DIFFICULTIES, type Difficulty } from './sim/config';
 import { loadBest, recordRun } from './ui/best';
 import { cleanName, createScreens, DEFAULT_NAME, type StartPrefs } from './ui/screens';
+import { initAds, showRewarded } from './native/ads';
+import { initApp } from './native/platform';
 
 const HUD_INTERVAL_MS = 100;
 const NAME_KEY = 'territory-wars.name';
@@ -39,6 +41,7 @@ function savePrefs(p: StartPrefs): void {
 // start → playing → over → start. Each game gets a fresh, one-shot session;
 // the previous one stays painted behind the start screen until replaced.
 let session: Session | null = null;
+let screen: 'home' | 'playing' | 'over' = 'home';
 let hudTimer: ReturnType<typeof setInterval> | null = null;
 let hudFrame: number | null = null;
 
@@ -63,6 +66,7 @@ function refreshHud(world: Session['world']): void {
 }
 
 function toStart(): void {
+  screen = 'home';
   ui.showStart(loadPrefs(), loadBest, (prefs) => {
     unlockAudio(); // inside the click gesture
     savePrefs(prefs);
@@ -73,12 +77,14 @@ function toStart(): void {
 function play(prefs: StartPrefs): void {
   stopHud();
   session?.dispose();
+  screen = 'playing';
   ui.showHud(); // before the session so the minimap has its CSS size
   const s = createSession(canvas, {
     minimap: ui.minimap,
     humanName: prefs.name,
     humanColor: prefs.color,
     difficulty: prefs.difficulty,
+    requestRevive: showRewarded, // a rewarded ad in the app; free in a browser
     onDown: (world, killerName) => {
       const human = world.players[world.humanId];
       ui.showRevive({
@@ -96,9 +102,11 @@ function play(prefs: StartPrefs): void {
     onOver: (world) => {
       ui.hideRevive();
       stopHud();
+      screen = 'over';
       const human = world.players[world.humanId];
       const run = { pct: s.finalPct(), kills: human.kills, time: world.time };
       const newBest = recordRun(run, prefs.difficulty);
+      if (newBest) setTimeout(() => playSound('newBest'), 450);
       ui.showOver({ ...run, won: world.won, newBest, difficulty: prefs.difficulty }, () => {
         unlockAudio();
         play(prefs);
@@ -106,6 +114,7 @@ function play(prefs: StartPrefs): void {
     },
   });
   session = s;
+  playSound('start');
   refreshHud(s.world);
   // Frozen once over (or knocked out), so the death-shrink tail doesn't read as 0%.
   hudTimer = setInterval(() => {
@@ -115,3 +124,14 @@ function play(prefs: StartPrefs): void {
 }
 
 toStart();
+
+void initApp({
+  // Back: results → home; ignored mid-game; on home it quits the app.
+  onBack: () => {
+    if (screen === 'over') { toStart(); return true; }
+    return screen === 'playing';
+  },
+  onResume: unlockAudio,
+});
+// Consent form (where required) and SDK start, so the first revive ad loads fast.
+void initAds();

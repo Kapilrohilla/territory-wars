@@ -1,4 +1,5 @@
 import { PALETTE } from '../game/palette';
+import { isMuted, playSelect, playTick, setMuted, unlockAudio } from '../game/sound';
 import { pct } from '../sim/world';
 import { DIFFICULTIES, type Difficulty } from '../sim/config';
 import type { DeathCause, World } from '../sim/types';
@@ -175,6 +176,29 @@ export function createScreens(root: HTMLElement): Screens {
   // ----- start -----
   const start = el('div', 'tw-screen tw-start');
   const startCard = el('div', 'tw-card');
+  const muteBtns: HTMLButtonElement[] = [];
+  /** A speaker toggle; every instance stays in sync. */
+  const muteButton = (cls: string) => {
+    const b = el('button', `tw-mute ${cls}`);
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      unlockAudio();
+      setMuted(!isMuted());
+      syncMute();
+      playTick();
+    });
+    muteBtns.push(b);
+    return b;
+  };
+  const syncMute = () => {
+    const m = isMuted();
+    for (const b of muteBtns) {
+      b.textContent = m ? '🔇' : '🔊';
+      b.setAttribute('aria-label', m ? 'Sound off. Turn sound on' : 'Sound on. Turn sound off');
+      b.setAttribute('aria-pressed', String(m));
+    }
+  };
+  startCard.append(muteButton('tw-mute-home'));
   startCard.append(el('h1', 'tw-title', 'Territory Wars'));
   startCard.append(el('p', 'tw-tagline', 'Loop out, come home, claim the map.'));
   const bestBox = el('div', 'tw-best');
@@ -250,7 +274,9 @@ export function createScreens(root: HTMLElement): Screens {
     setText(bestLabel, `Best score · ${DIFFICULTY_LABEL[d]}`);
     showBest(bestForCb(d));
   };
-  diffBtns.forEach((b, i) => b.addEventListener('click', () => pickDiff(DIFFICULTIES[i])));
+  // Sound only on user picks, not when showStart restores the saved choice.
+  const userPickDiff = (d: Difficulty) => { unlockAudio(); playSelect(d); pickDiff(d); };
+  diffBtns.forEach((b, i) => b.addEventListener('click', () => userPickDiff(DIFFICULTIES[i])));
   diffGroup.addEventListener('keydown', (e) => {
     const n = diffBtns.length;
     let d = 0;
@@ -259,7 +285,7 @@ export function createScreens(root: HTMLElement): Screens {
     if (!d) return;
     e.preventDefault();
     const i = (DIFFICULTIES.indexOf(chosenDiff) + d + n) % n;
-    pickDiff(DIFFICULTIES[i]);
+    userPickDiff(DIFFICULTIES[i]);
     diffBtns[i].focus();
   });
   let onPlayCb: ((p: StartPrefs) => void) | null = null;
@@ -273,7 +299,7 @@ export function createScreens(root: HTMLElement): Screens {
     playBtn.style.background = c.base;
     playBtn.style.boxShadow = `0 4px 0 ${c.lip}`;
   };
-  swatchBtns.forEach((b, i) => b.addEventListener('click', () => pick(i)));
+  swatchBtns.forEach((b, i) => b.addEventListener('click', () => { unlockAudio(); playTick(); pick(i); }));
   swatches.addEventListener('keydown', (e) => {
     const n = swatchBtns.length;
     let d = 0;
@@ -318,7 +344,8 @@ export function createScreens(root: HTMLElement): Screens {
   const minimap = el('canvas', 'tw-minimap');
   minimap.setAttribute('aria-label', 'Map of the whole arena');
   minimap.setAttribute('role', 'img');
-  hud.append(stats, board, minimap);
+  hud.append(stats, board, minimap, muteButton('tw-mute-hud'));
+  syncMute();
 
   // ----- game over -----
   const over = el('div', 'tw-screen tw-over');
