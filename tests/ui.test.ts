@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
-  highestBest, hudAlerts, readFlag, reviveSubtitle, writeFlag, type BoardEntry,
+  highestBest, hudAlerts, NAME_MAX, randomName, readFlag, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
 import { isVibrationOn, setVibrationOn } from '../src/native/platform';
 import { COLOR_NAMES, PALETTE } from '../src/game/palette';
@@ -185,5 +185,30 @@ describe('vibration setting', () => {
 describe('palette', () => {
   it('names every player colour', () => {
     expect(COLOR_NAMES).toHaveLength(PALETTE.players.length);
+  });
+});
+
+describe('territoryVerdict', () => {
+  it('words the result by territory, a win first', () => {
+    expect(territoryVerdict(5, true)).toBe('Conquered the arena');
+    expect(territoryVerdict(34.8, false)).toBe('Dominated the arena');
+    expect(territoryVerdict(12, false)).toBe('Strong showing');
+    expect(territoryVerdict(4, false)).toBe('Solid patch of land');
+    expect(territoryVerdict(0.5, false)).toBe('Loop wider next time');
+  });
+});
+
+describe('randomName', () => {
+  it('picks a name that fits and differs from the current one', () => {
+    const names = ['Kiwi', 'Mango', 'A really long name here'];
+    expect(randomName('Kiwi', () => 0, names)).toBe('Mango');
+    expect(randomName('Kiwi', () => 0.999, names)).toBe('Mango');
+    expect(randomName('Mango', () => 0, names)).toBe('Kiwi');
+  });
+  it('keeps the current name when nothing else fits', () => {
+    expect(randomName('Kiwi', () => 0.5, ['Kiwi'])).toBe('Kiwi');
+  });
+  it('only returns names within the field limit by default', () => {
+    for (let i = 0; i < 20; i++) expect(randomName('You', () => i / 20).length).toBeLessThanOrEqual(NAME_MAX);
   });
 });

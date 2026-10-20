@@ -1,6 +1,7 @@
 import { COLOR_NAMES, PALETTE } from '../game/palette';
 import { isMuted, playSelect, playTick, setMuted, unlockAudio } from '../game/sound';
 import { isNative, isVibrationOn, setVibrationOn } from '../native/platform';
+import { NAMES } from '../sim/names';
 import { pct } from '../sim/world';
 import { CONFIG, DIFFICULTIES, type Difficulty } from '../sim/config';
 import type { DeathCause, Player, World } from '../sim/types';
@@ -147,6 +148,22 @@ export function writeFlag(key: string, on: boolean, store: FlagStore = globalThi
   try { store?.setItem(key, on ? '1' : '0'); } catch { /* storage unavailable */ }
 }
 
+/** One-line verdict under the results %: a win, or how much of the arena was held. */
+export function territoryVerdict(pct: number, won: boolean): string {
+  if (won) return 'Conquered the arena';
+  if (pct >= 25) return 'Dominated the arena';
+  if (pct >= 10) return 'Strong showing';
+  if (pct >= 3) return 'Solid patch of land';
+  return 'Loop wider next time';
+}
+
+/** A random bot-style name that fits the name field, never `current` when there is a choice. */
+export function randomName(current: string, rand: () => number = Math.random, names: readonly string[] = NAMES): string {
+  const pool = names.filter((n) => n.length <= NAME_MAX && n !== current);
+  if (!pool.length) return current;
+  return pool[Math.min(pool.length - 1, Math.floor(rand() * pool.length))];
+}
+
 export const REDUCED_MOTION_KEY = 'territory-wars.reduced-motion';
 
 /** The steering hint fades out after this many seconds of play. */
@@ -249,13 +266,15 @@ const ICONS = {
   'chart': 'M4 20h16M6 20v-8h4v8M10 20V5h4v15M14 20v-6h4v6',
   'close': 'M6 6l12 12M18 6L6 18',
   'x-circle': 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0zM9 9l6 6M15 9l-6 6',
-  'alert': 'M12 3.5L2.5 20h19zM12 10v4M12 17v.01',
   'sound': 'M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11',
   'sound-off': 'M4 9v6h4l5 4V5L8 9zM17 9.5l5 5M22 9.5l-5 5',
   'vibrate': 'M8.5 4h7v16h-7zM5 8v8M19 8v8M2 10v4M22 10v4',
   'motion-off': 'M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0zM6.3 6.3l11.4 11.4',
   'gear': 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
   'check': 'M5 12.5l4.5 4.5L19 7',
+  'dice': 'M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01',
+  'home': 'M3.5 10.5L12 3.5l8.5 7V20a.5.5 0 0 1-.5.5h-5v-6h-6v6H4a.5.5 0 0 1-.5-.5z',
+  'trend': 'M3 17l6-6 4 4 8-8M15 7h6v6',
   'id': 'M3.5 6h17v13h-17zM9 13a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM5.8 17c.8-1.7 5.6-1.7 6.4 0M14.5 10h3.5M14.5 14h3.5',
 } as const;
 type IconName = keyof typeof ICONS;
@@ -358,7 +377,15 @@ export function createScreens(root: HTMLElement): Screens {
   nameInput.id = 'tw-name';
   nameInput.enterKeyHint = 'go';
   const nameField = el('div', 'tw-field');
-  nameField.append(icon('id', 'tw-field-icon'), nameInput);
+  const diceBtn = button('tw-dice');
+  diceBtn.setAttribute('aria-label', 'Random name');
+  diceBtn.append(icon('dice'));
+  diceBtn.addEventListener('click', () => {
+    unlockAudio();
+    playTick();
+    nameInput.value = randomName(nameInput.value);
+  });
+  nameField.append(icon('id', 'tw-field-icon'), nameInput, diceBtn);
   startCard.append(labelRow('Your name', el('span', 'tw-label-aside', `max ${NAME_MAX} chars`), 'tw-name'), nameField);
 
   const colorName = el('span', 'tw-label-aside tw-color-name');
@@ -566,7 +593,7 @@ export function createScreens(root: HTMLElement): Screens {
   pctEl.append(pctNum, el('span', 'tw-pct-sign', '%'));
   const areaFoot = el('div', 'tw-area-foot');
   const burnTag = el('span', 'tw-burn-tag');
-  burnTag.append(icon('alert'), el('span', undefined, 'Burning'));
+  burnTag.append(icon('flame'), el('span', undefined, 'Burning'));
   burnTag.hidden = true;
   const killsEl = el('span', 'tw-area-stat tw-num');
   const killsNum = el('span', undefined, '0');
@@ -625,23 +652,48 @@ export function createScreens(root: HTMLElement): Screens {
 
   // ----- game over -----
   const over = el('div', 'tw-screen tw-over');
+  const overWrap = el('div', 'tw-over-wrap');
   const overCard = el('div', 'tw-card tw-over-card');
-  const overDiff = el('div', 'tw-diff-chip');
-  const overTitle = el('h2', 'tw-over-title');
-  const newBestEl = el('div', 'tw-new-best');
+  const overChips = el('div', 'tw-over-chips');
+  const overDiff = el('span', 'tw-diff-chip');
+  const newBestEl = el('span', 'tw-new-best');
   newBestEl.append(icon('star'), el('span', undefined, 'New best!'));
-  const overBig = el('div', 'tw-over-big');
+  overChips.append(overDiff, newBestEl);
+  const overTitle = el('h2', 'tw-over-title');
+  const overPanel = el('div', 'tw-over-panel');
+  const overPanelText = el('div', 'tw-over-panel-text');
   const overPct = el('div', 'tw-over-pct tw-num');
-  overBig.append(overPct, el('div', 'tw-over-pct-label', 'Territory owned'));
+  const overPctNum = el('span');
+  overPct.append(overPctNum, el('span', 'tw-pct-sign', '%'));
+  const overVerdict = el('div', 'tw-over-verdict');
+  const overVerdictText = el('span');
+  overVerdict.append(icon('trend'), overVerdictText);
+  overPanelText.append(el('div', 'tw-over-pct-label', 'Territory owned'), overPct, overVerdict);
+  // The final arena, copied from the HUD minimap when the round ends.
+  const overMap = el('canvas', 'tw-over-map');
+  overMap.setAttribute('role', 'img');
+  overMap.setAttribute('aria-label', 'The arena at the end of the round');
+  overPanel.append(overPanelText, overMap);
   const overStats = el('div', 'tw-tiles');
   const overKills = statTile(overStats, 'swords', 'Kills').value;
-  const overTime = statTile(overStats, 'timer', 'Survived').value;
-  const overBest = statTile(overStats, null, 'Best');
+  const overTime = statTile(overStats, 'timer', 'Time').value;
+  const overBest = statTile(overStats, 'star', 'Best');
+  overCard.append(overChips, overTitle, overPanel, overStats);
   const againBtn = button('tw-btn tw-again');
   againBtn.append(icon('play-fill'), el('span', undefined, 'Play again'));
-  const homeBtn = button('tw-btn tw-btn-secondary tw-home', 'Home');
-  overCard.append(overDiff, overTitle, newBestEl, overBig, overStats, againBtn, homeBtn);
-  over.append(overCard);
+  const homeBtn = button('tw-btn tw-btn-secondary tw-home');
+  homeBtn.append(icon('home'), el('span', undefined, 'Home'));
+  overWrap.append(overCard, againBtn, homeBtn);
+  over.append(overWrap);
+  const copyMinimap = () => {
+    const size = 96;
+    const dpr = Math.min(3, globalThis.devicePixelRatio || 1);
+    overMap.width = overMap.height = Math.round(size * dpr);
+    const ctx = overMap.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, overMap.width, overMap.height);
+    if (minimap.width > 0) ctx.drawImage(minimap, 0, 0, overMap.width, overMap.height);
+  };
   let onAgainCb: (() => void) | null = null;
   let onHomeCb: (() => void) | null = null;
   const leaveOver = (which: 'again' | 'home') => {
@@ -692,7 +744,7 @@ export function createScreens(root: HTMLElement): Screens {
     reviveCaption.append(el('span', 'tw-ad-tag', 'AD'), document.createTextNode(' Watch a short ad · '));
     reviveBtn.setAttribute('aria-label', 'Revive: watch a short ad');
   }
-  reviveCaption.append(document.createTextNode(`Keep 100% of your territory · ${CONFIG.REVIVE_PROTECT_S}s shield`));
+  reviveCaption.append(document.createTextNode(`Keep 100% land · ${CONFIG.REVIVE_PROTECT_S}s shield`));
   const noThanks = button('tw-link', 'No thanks, view results');
   reviveCard.append(closeBtn, pill, reviveTitle, reviveSub, ring, reviveStats, reviveBtn, reviveCaption, noThanks);
   if (!isNative) reviveCard.append(el('p', 'tw-keys-hint', 'Enter to revive · Esc to skip'));
@@ -884,11 +936,13 @@ export function createScreens(root: HTMLElement): Screens {
       setText(overDiff, DIFFICULTY_LABEL[s.difficulty]);
       overDiff.dataset.difficulty = s.difficulty;
       over.classList.toggle('tw-won', s.won);
-      setText(overPct, formatPct(s.pct, 2));
+      over.classList.toggle('tw-is-new-best', s.newBest);
+      setText(overPctNum, Math.max(0, s.pct).toFixed(2));
+      setText(overVerdictText, territoryVerdict(s.pct, s.won));
       setText(overKills, String(s.kills));
       setText(overTime, formatTime(s.time));
-      setText(overBest.label, `Best · ${DIFFICULTY_SHORT[s.difficulty]}`);
       setText(overBest.value, s.best ? formatPct(s.best.pct, 1) : '—');
+      copyMinimap();
       onAgainCb = onAgain;
       onHomeCb = onHome;
       only(over);
