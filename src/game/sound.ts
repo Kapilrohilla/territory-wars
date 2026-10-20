@@ -7,16 +7,34 @@
 import type { Difficulty } from '../sim/config';
 
 export type SoundName =
-  | 'capture'   // you closed a loop
-  | 'cut'       // you cut a rival's trail (their trail starts burning)
-  | 'kill'      // a rival you hit was knocked out
-  | 'burning'   // your own trail was cut and is burning toward you
-  | 'down'      // you were knocked out
-  | 'revive'    // you came back
-  | 'start'     // a round begins
+  | 'capture'    // you closed a loop (scaled by `pct`)
+  | 'steal'      // that loop took land from a rival
+  | 'cut'        // you cut a rival's trail (their trail starts burning)
+  | 'kill'       // a rival you hit was knocked out (pitched up by `streak`)
+  | 'burning'    // your own trail was cut and is burning toward you
+  | 'escape'     // you made it home and the burn went out
+  | 'down'       // you were knocked out
+  | 'revive'     // you came back (the shield goes up)
+  | 'shieldDown' // the revive shield wore off
+  | 'milestone'  // you first passed 10 / 25 / 50 % this round (`tier` 0..2)
+  | 'start'      // a round begins
   | 'win'
   | 'gameover'
   | 'newBest';
+
+export type SoundOpts = {
+  /** capture: land gained, in % of the arena. */
+  pct?: number;
+  /** kill: how many quick kills came before this one (0..4), one scale step each. */
+  streak?: number;
+  /** milestone: 0, 1, 2 for 10 %, 25 %, 50 %. */
+  tier?: number;
+  /** Seconds to wait before the sound starts (to sequence sounds in one step). */
+  delay?: number;
+};
+
+/** Every voice stays under this peak gain. */
+export const MAX_GAIN = 0.09;
 
 const MUTE_KEY = 'territory-wars.muted';
 const MASTER_GAIN = 0.9;
@@ -24,6 +42,8 @@ const MASTER_GAIN = 0.9;
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
 let failed = false;
+/** Added to every voice's start time while a sound is being built (SoundOpts.delay). */
+let offset = 0;
 let muted = loadMuted();
 
 type AudioCtor = { new (): AudioContext };
@@ -81,7 +101,7 @@ type ToneOpts = {
 };
 
 function tone(c: AudioContext, out: AudioNode, o: ToneOpts): void {
-  const t = c.currentTime + (o.delay ?? 0);
+  const t = c.currentTime + offset + (o.delay ?? 0);
   const attack = o.attack ?? 0.006;
   const osc = c.createOscillator();
   const g = c.createGain();
@@ -90,7 +110,7 @@ function tone(c: AudioContext, out: AudioNode, o: ToneOpts): void {
   if (o.f1) osc.frequency.exponentialRampToValueAtTime(o.f1, t + o.dur);
   // Short attack and exponential release so nothing clicks.
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(o.gain, t + attack);
+  g.gain.linearRampToValueAtTime(Math.min(o.gain, MAX_GAIN), t + attack);
   g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
   osc.connect(g);
   g.connect(out);
@@ -99,7 +119,18 @@ function tone(c: AudioContext, out: AudioNode, o: ToneOpts): void {
   osc.onended = () => { osc.disconnect(); g.disconnect(); };
 }
 
-type NoiseOpts = { dur: number; gain: number; delay?: number; freq: number; q?: number; type?: BiquadFilterType };
+type NoiseOpts = {
+  dur: number;
+  gain: number;
+  delay?: number;
+  /** Filter frequency, gliding to `freqEnd` over the sound when given. */
+  freq: number;
+  freqEnd?: number;
+  q?: number;
+  type?: BiquadFilterType;
+  /** Pulse the loudness with a smooth sine tremolo at this rate (Hz). */
+  pulseHz?: number;
+};
 
 let noiseBuf: AudioBuffer | null = null;
 function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
@@ -108,23 +139,42 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   }
-  const t = c.currentTime + (o.delay ?? 0);
+  const t = c.currentTime + offset + (o.delay ?? 0);
   const src = c.createBufferSource();
   src.buffer = noiseBuf;
   const f = c.createBiquadFilter();
   f.type = o.type ?? 'bandpass';
   f.frequency.setValueAtTime(o.freq, t);
+  if (o.freqEnd) f.frequency.exponentialRampToValueAtTime(o.freqEnd, t + o.dur);
   f.Q.value = o.q ?? 1;
   const g = c.createGain();
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(o.gain, t + 0.004);
+  g.gain.linearRampToValueAtTime(Math.min(o.gain, MAX_GAIN), t + 0.004);
   g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
   src.connect(f);
   f.connect(g);
-  g.connect(out);
+  const nodes: AudioNode[] = [src, f, g];
+  if (o.pulseHz) {
+    // Tremolo: a sine LFO swings the gain of `trem` between 0 and 1 (no hard edges).
+    const trem = c.createGain();
+    trem.gain.value = 0.5;
+    const lfo = c.createOscillator();
+    lfo.frequency.value = o.pulseHz;
+    const depth = c.createGain();
+    depth.gain.value = 0.5;
+    lfo.connect(depth);
+    depth.connect(trem.gain);
+    g.connect(trem);
+    trem.connect(out);
+    lfo.start(t);
+    lfo.stop(t + o.dur + 0.02);
+    nodes.push(trem, lfo, depth);
+  } else {
+    g.connect(out);
+  }
   src.start(t);
   src.stop(t + o.dur + 0.02);
-  src.onended = () => { src.disconnect(); f.disconnect(); g.disconnect(); };
+  src.onended = () => { for (const n of nodes) n.disconnect(); };
 }
 
 /** Notes as semitones above A4 (440 Hz). */
@@ -132,41 +182,100 @@ const note = (semi: number) => 440 * 2 ** (semi / 12);
 
 // ---------- the sounds ----------
 
-const SOUNDS: Record<SoundName, (c: AudioContext, out: AudioNode) => void> = {
-  capture(c, out) {
-    // Soft rising blip with a little sparkle on top.
-    tone(c, out, { f0: 660, f1: 880, dur: 0.09, gain: 0.08 });
-    tone(c, out, { f0: 1320, f1: 1760, dur: 0.07, gain: 0.025, delay: 0.03 });
+/** Do-re-mi-fa-sol: the kill chirp climbs one step per quick follow-up kill. */
+export const STREAK_STEPS = [0, 2, 4, 5, 7];
+export const MAX_STREAK = STREAK_STEPS.length - 1;
+
+/**
+ * The notes (semitones above A4) of a capture of `pct` % of the arena: one soft note
+ * for a nibble, a rising pair for a decent bite, a rising major-triad run above 3 %.
+ */
+export function captureNotes(pct: number): number[] {
+  if (pct > 3) return [3, 7, 10];
+  if (pct >= 1) return [3, 10];
+  return [3];
+}
+
+/** Rising major arpeggios for the 10 / 25 / 50 % milestones; each tier is longer and higher. */
+const MILESTONE_RUNS = [[3, 7, 10, 15], [5, 9, 12, 17], [7, 11, 14, 19, 26]];
+
+type Synth = (c: AudioContext, out: AudioNode, o: SoundOpts) => void;
+
+const SOUNDS: Record<SoundName, Synth> = {
+  capture(c, out, o) {
+    const pct = o.pct ?? 0;
+    const notes = captureNotes(pct);
+    const big = notes.length === 3;
+    // Louder (still soft) for bigger gains; each note a touch higher than the last.
+    const gain = big ? 0.075 : notes.length === 2 ? 0.065 : 0.05;
+    notes.forEach((s, i) => {
+      const f = note(s);
+      tone(c, out, { f0: f, f1: f * 1.03, dur: i === notes.length - 1 ? 0.16 : 0.09, gain, delay: i * 0.065 });
+      tone(c, out, { type: 'triangle', f0: f * 2, dur: 0.06, gain: gain * 0.3, delay: i * 0.065 });
+    });
+    if (big) {
+      // Sparkle: a twinkle of high pings plus an airy shimmer over the last note.
+      const at = 2 * 0.065;
+      [27, 31, 34].forEach((s, i) => tone(c, out, { f0: note(s), dur: 0.08, gain: 0.025, delay: at + 0.03 + i * 0.04 }));
+      noise(c, out, { dur: 0.22, gain: 0.02, freq: 7000, q: 0.6, type: 'highpass', delay: at });
+    }
+  },
+  steal(c, out) {
+    // A quick downward "swipe": band-passed noise sweeping low plus a gritty crunch.
+    noise(c, out, { dur: 0.09, gain: 0.07, freq: 1800, freqEnd: 500, q: 1.8 });
+    tone(c, out, { type: 'sawtooth', f0: 320, f1: 140, dur: 0.07, gain: 0.04 });
   },
   cut(c, out) {
     // Quick "swish": a filtered noise sweep plus a bright ping.
-    noise(c, out, { dur: 0.12, gain: 0.12, freq: 2400, q: 2.5 });
+    noise(c, out, { dur: 0.12, gain: 0.08, freq: 2400, q: 2.5 });
     tone(c, out, { type: 'triangle', f0: 1200, f1: 1600, dur: 0.1, gain: 0.05, delay: 0.02 });
   },
-  kill(c, out) {
-    // Punchy knockout: low thump, crunch, then a short victory chirp.
-    tone(c, out, { f0: 180, f1: 55, dur: 0.22, gain: 0.22 });
-    noise(c, out, { dur: 0.16, gain: 0.14, freq: 900, q: 0.8 });
-    tone(c, out, { type: 'square', f0: note(3), dur: 0.07, gain: 0.035, delay: 0.1 });
-    tone(c, out, { type: 'square', f0: note(10), dur: 0.11, gain: 0.035, delay: 0.17 });
+  kill(c, out, o) {
+    // Punchy knockout: low thump, crunch, then a victory chirp that climbs with the streak.
+    const k = STREAK_STEPS[Math.max(0, Math.min(MAX_STREAK, o.streak ?? 0))];
+    tone(c, out, { f0: 180, f1: 55, dur: 0.2, gain: 0.09 });
+    noise(c, out, { dur: 0.14, gain: 0.07, freq: 900, q: 0.8 });
+    tone(c, out, { type: 'square', f0: note(3 + k), dur: 0.07, gain: 0.035, delay: 0.09 });
+    tone(c, out, { type: 'square', f0: note(10 + k), dur: 0.11, gain: 0.035, delay: 0.15 });
   },
   burning(c, out) {
-    // Warning: two quick falling beeps with crackle — get home!
-    tone(c, out, { type: 'triangle', f0: 990, f1: 700, dur: 0.1, gain: 0.07 });
-    tone(c, out, { type: 'triangle', f0: 990, f1: 700, dur: 0.1, gain: 0.07, delay: 0.14 });
-    noise(c, out, { dur: 0.3, gain: 0.05, freq: 3200, q: 0.7, type: 'highpass' });
+    // Warning sizzle: a crackling hiss whose loudness pulses fast, under two urgent beeps.
+    noise(c, out, { dur: 0.36, gain: 0.05, freq: 3600, q: 0.7, type: 'highpass', pulseHz: 14 });
+    tone(c, out, { type: 'square', f0: note(15), f1: note(12), dur: 0.08, gain: 0.04 });
+    tone(c, out, { type: 'square', f0: note(15), f1: note(12), dur: 0.08, gain: 0.04, delay: 0.12 });
+  },
+  escape(c, out) {
+    // Relieved "safe!": a falling-then-resolving two-note chime with a soft bell overtone.
+    tone(c, out, { type: 'triangle', f0: note(10), dur: 0.12, gain: 0.06 });
+    tone(c, out, { f0: note(15), dur: 0.26, gain: 0.06, delay: 0.09 });
+    tone(c, out, { f0: note(27), dur: 0.2, gain: 0.015, delay: 0.09 });
   },
   down(c, out) {
     // Sad descending "wah-wah".
-    tone(c, out, { type: 'triangle', f0: note(-2), f1: note(-4), dur: 0.22, gain: 0.1 });
-    tone(c, out, { type: 'triangle', f0: note(-5), f1: note(-7), dur: 0.22, gain: 0.1, delay: 0.22 });
-    tone(c, out, { type: 'triangle', f0: note(-9), f1: note(-14), dur: 0.5, gain: 0.1, delay: 0.44 });
+    tone(c, out, { type: 'triangle', f0: note(-2), f1: note(-4), dur: 0.2, gain: 0.08 });
+    tone(c, out, { type: 'triangle', f0: note(-5), f1: note(-7), dur: 0.2, gain: 0.08, delay: 0.2 });
+    tone(c, out, { type: 'triangle', f0: note(-9), f1: note(-14), dur: 0.4, gain: 0.08, delay: 0.4 });
   },
   revive(c, out) {
-    // Upward sparkle arpeggio.
+    // Power-up: a rising sweep under a quick upward arpeggio and a shimmer.
+    tone(c, out, { type: 'sawtooth', f0: note(-12), f1: note(12), dur: 0.32, gain: 0.025, attack: 0.04 });
     [0, 4, 7, 12, 16].forEach((s, i) =>
-      tone(c, out, { f0: note(s + 3), dur: 0.16, gain: 0.06, delay: i * 0.055 }));
-    noise(c, out, { dur: 0.35, gain: 0.03, freq: 6000, q: 0.5, type: 'highpass', delay: 0.05 });
+      tone(c, out, { f0: note(s + 3), dur: 0.14, gain: 0.05, delay: 0.04 + i * 0.05 }));
+    noise(c, out, { dur: 0.3, gain: 0.025, freq: 6000, q: 0.5, type: 'highpass', delay: 0.1 });
+  },
+  shieldDown(c, out) {
+    // Soft power-down: a gentle falling glide, like the shield fizzing out.
+    tone(c, out, { type: 'triangle', f0: note(10), f1: note(-2), dur: 0.26, gain: 0.04, attack: 0.02 });
+    noise(c, out, { dur: 0.18, gain: 0.012, freq: 4000, freqEnd: 1200, q: 0.8 });
+  },
+  milestone(c, out, o) {
+    // Short fanfare; the last note rings a little longer.
+    const run = MILESTONE_RUNS[Math.max(0, Math.min(MILESTONE_RUNS.length - 1, o.tier ?? 0))];
+    run.forEach((s, i) => {
+      const last = i === run.length - 1;
+      tone(c, out, { type: 'square', f0: note(s), dur: last ? 0.3 : 0.09, gain: 0.03, delay: i * 0.08 });
+      tone(c, out, { f0: note(s + 12), dur: last ? 0.3 : 0.1, gain: 0.03, delay: i * 0.08 });
+    });
   },
   start(c, out) {
     // "Ready… go!": two short ticks then a bright rising chord.
@@ -198,13 +307,14 @@ const SOUNDS: Record<SoundName, (c: AudioContext, out: AudioNode) => void> = {
 /** Difficulty pick: a soft click whose pitch rises Easy → Normal → Hard. */
 const SELECT_SEMI: Record<Difficulty, number> = { easy: -5, normal: 2, hard: 9 };
 
-function play(fn: (c: AudioContext, out: AudioNode) => void): void {
+function play(fn: Synth, o: SoundOpts = {}): void {
   if (muted || !ctx || !master || ctx.state !== 'running') return;
-  try { fn(ctx, master); } catch { /* ignore */ }
+  offset = Math.max(0, o.delay ?? 0);
+  try { fn(ctx, master, o); } catch { /* ignore */ } finally { offset = 0; }
 }
 
-export function playSound(name: SoundName): void {
-  play(SOUNDS[name]);
+export function playSound(name: SoundName, opts?: SoundOpts): void {
+  play(SOUNDS[name], opts);
 }
 
 export function playSelect(d: Difficulty): void {

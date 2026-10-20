@@ -8,7 +8,7 @@ import { createInput } from './input';
 import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
 import { drawMinimap } from './minimap';
-import { soundsFor } from './sfxEvents';
+import { createSfxState, soundsFor } from './sfxEvents';
 import { playSound } from './sound';
 import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
 
@@ -123,12 +123,12 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   let overNotified = false;
   let finalPct = 0;
 
+  const sfx = createSfxState();
   const notifyEvents = () => {
     // world.events only holds the latest step's (or revive call's) events.
-    if (world.events.length) {
-      effects.onEvents(world.events, world, camera);
-      for (const name of soundsFor(world.events, world)) playSound(name);
-    }
+    if (world.events.length) effects.onEvents(world.events, world, camera);
+    // Every step, even a silent one: the revive shield's end is a state edge, not an event.
+    for (const cue of soundsFor(world.events, world, sfx)) playSound(cue.name, cue);
   };
   const recordFinalPct = () => {
     const h = world.players[world.humanId];
@@ -232,7 +232,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
         return false;
       }
       reviveHuman(world);
-      playSound('revive');
+      notifyEvents(); // no events, but the shield going up plays the power-up
       snapshotFx(fx, world);
       lastFrame = null;
       return true;
