@@ -2,7 +2,7 @@ import { CONFIG } from '../sim/config';
 import type { World } from '../sim/types';
 import type { Camera } from './camera';
 import { PALETTE } from './palette';
-import { addTrailPath, interpPos, landPath, playerColors } from './render';
+import { addTrailPath, interpPos, landPath, playerColors, shownHeads, shownLand } from './render';
 
 /** Gap between the arena edge and the minimap edge, in CSS px. */
 const PAD_PX = 4;
@@ -48,9 +48,10 @@ export function drawMinimap(
   ctx.clip();
 
   for (const p of world.players) {
-    if (!p.land.length) continue;
+    const land = shownLand(world, p); // keeps a knocked-out human's land while it may come back
+    if (!land.length) continue;
     ctx.fillStyle = playerColors(p.colorIndex).base;
-    ctx.fill(landPath(p.land), 'evenodd');
+    ctx.fill(landPath(land), 'evenodd');
   }
 
   ctx.lineCap = 'round';
@@ -80,7 +81,7 @@ export function drawMinimap(
   ctx.stroke();
 
   // Heads: bots first, human on top.
-  const alive = world.players.filter((p) => p.alive);
+  const alive = shownHeads(world);
   alive.sort((a, b) => Number(a.isHuman) - Number(b.isHuman));
   for (const p of alive) {
     const h = interpPos(p, alpha);

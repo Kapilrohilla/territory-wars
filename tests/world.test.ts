@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { createWorld, step, pct, trailLength } from '../src/sim/world';
+import { createWorld, declineRevive, reviveHuman, step, pct, trailLength } from '../src/sim/world';
 import type { Input, Player, World } from '../src/sim/types';
 import { circleRing, type MultiPoly, type Vec } from '../src/sim/geometry';
-import { landArea } from '../src/sim/territory';
+import { landArea, landContains } from '../src/sim/territory';
 import { CONFIG, DIFFICULTY } from '../src/sim/config';
 
 const v = (x: number, y: number): Vec => ({ x, y });
@@ -127,7 +127,7 @@ describe('world', () => {
     }
     expect(hitTick).toBeGreaterThanOrEqual(0);
     expect(deathTick).toBeGreaterThan(hitTick); // dies after the burn, not on the hit tick
-    expect(death).toEqual({ type: 'death', playerId: 1, killerId: 0 });
+    expect(death).toEqual({ type: 'death', playerId: 1, killerId: 0, cause: 'trail' });
     expect(b.alive).toBe(false);
     expect(b.trail.length).toBe(0);
     expect(b.burn).toBeNull();
@@ -171,7 +171,7 @@ describe('world', () => {
         expect(b.burn!.back).toBeGreaterThanOrEqual(0);
       }
     }
-    expect(death).toEqual({ type: 'death', playerId: 1, killerId: 0 });
+    expect(death).toEqual({ type: 'death', playerId: 1, killerId: 0, cause: 'trail' });
     expect(Math.abs(w.time - t0 - expected)).toBeLessThan(3 * CONFIG.DT);
     expect(w.players[0].kills).toBe(1);
     expect(b.burn).toBeNull();
@@ -262,7 +262,7 @@ describe('world', () => {
     step(w, NO_INPUT);
     expect(b.alive).toBe(false);
     expect(w.players[0].alive).toBe(true);
-    expect(w.events).toContainEqual({ type: 'death', playerId: 1, killerId: 0 });
+    expect(w.events).toContainEqual({ type: 'death', playerId: 1, killerId: 0, cause: 'headon' });
   });
 
   it('head-on tie kills both', () => {
@@ -289,7 +289,7 @@ describe('world', () => {
     }
     expect(cap).toBe(true);
     expect(b.alive).toBe(false);
-    expect(w.events).toContainEqual({ type: 'death', playerId: 1, killerId: 0 });
+    expect(w.events).toContainEqual({ type: 'death', playerId: 1, killerId: 0, cause: 'captured' });
     expect(h.kills).toBe(1);
     const ev = w.events.find((e) => e.type === 'capture');
     expect(ev && ev.type === 'capture' && ev.gainedPct).toBeGreaterThan(0);
@@ -319,7 +319,7 @@ describe('world', () => {
     expect(cap).toBe(true);
     expect(onOld.alive).toBe(true);
     expect(inNew.alive).toBe(false);
-    expect(w.events).toContainEqual({ type: 'death', playerId: 2, killerId: 0 });
+    expect(w.events).toContainEqual({ type: 'death', playerId: 2, killerId: 0, cause: 'captured' });
   });
 
   it('capture subtracts land from enemies', () => {
@@ -440,11 +440,12 @@ describe('world', () => {
     h.targetHeading = Math.PI / 2;
     h.trail = [v(2.5, 0), v(10, 0)];
     placeBot(w, v(6, 1), -Math.PI / 2);
+    w.revivesLeft = 0; // revive used up: the death ends the game
     for (let i = 0; i < 60 && !w.over; i++) step(w, NO_INPUT);
     expect(h.alive).toBe(false);
     expect(w.over).toBe(true);
     expect(w.won).toBe(false);
-    expect(w.events).toContainEqual({ type: 'death', playerId: 0, killerId: 1 });
+    expect(w.events).toContainEqual({ type: 'death', playerId: 0, killerId: 1, cause: 'trail' });
     expect(w.events).toContainEqual({ type: 'gameover' });
     const t = w.time;
     step(w, NO_INPUT);
@@ -458,5 +459,164 @@ describe('world', () => {
     expect(w.won).toBe(true);
     expect(w.over).toBe(true);
     expect(w.events).toContainEqual({ type: 'win' });
+  });
+});
+
+describe('revive', () => {
+  /** The human (at x = 10, heading north) has a trail along y = 0 that bot 1 is about to cross. */
+  function trailTrap(w: World): Player {
+    const h = w.players[0];
+    h.pos = v(10, 0.2);
+    h.prevPos = v(10, 0.1);
+    h.heading = Math.PI / 2;
+    h.targetHeading = Math.PI / 2;
+    h.trail = [v(2.5, 0), v(10, 0)];
+    return placeBot(w, v(6, 1), -Math.PI / 2);
+  }
+
+  /** Puts the world straight into the knocked-out state with `land` as the land at death. */
+  function knockedOut(w: World, land: MultiPoly | null): void {
+    const h = w.players[0];
+    h.alive = false;
+    h.trail = [];
+    h.land = [];
+    h.dyingLand = land;
+    h.deathTime = w.time;
+    w.awaitingRevive = true;
+  }
+
+  it('starts with one revive and nothing pending', () => {
+    const w = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+    expect(w.revivesLeft).toBe(1);
+    expect(w.awaitingRevive).toBe(false);
+    expect(w.downKillerId).toBeNull();
+    expect(w.players[0].protectedUntil).toBe(0);
+  });
+
+  it("the human's first death emits down, not gameover, and freezes step", () => {
+    const w = soloWorld();
+    const b = trailTrap(w);
+    for (let i = 0; i < 60 && !w.awaitingRevive; i++) step(w, NO_INPUT);
+    const h = w.players[0];
+    expect(w.awaitingRevive).toBe(true);
+    expect(w.over).toBe(false);
+    expect(h.alive).toBe(false);
+    expect(w.events).toContainEqual({ type: 'down', playerId: 0, killerId: 1, cause: 'trail' });
+    expect(w.events.some((e) => e.type === 'gameover' || e.type === 'death')).toBe(false);
+    expect(w.downKillerId).toBe(1);
+    expect(b.kills).toBe(1); // credited at the down moment
+    const snap = JSON.stringify(w);
+    for (let i = 0; i < 30; i++) step(w, NO_INPUT);
+    expect(JSON.stringify(w)).toBe(snap); // step is a no-op while awaiting
+  });
+
+  it('a self-kill downs with a null killer and cause self', () => {
+    const w = soloWorld();
+    const h = w.players[0];
+    for (let i = 0; i < 400 && h.alive; i++) {
+      const t = w.time;
+      const target = t < 1 ? 0 : t < 1.5 ? Math.PI / 2 : t < 2 ? Math.PI : -Math.PI / 2;
+      step(w, steer(target));
+    }
+    expect(w.events).toContainEqual({ type: 'down', playerId: 0, killerId: null, cause: 'self' });
+    expect(w.downKillerId).toBeNull();
+  });
+
+  it('reviveHuman restores the land at death and puts the head inside it', () => {
+    const w = soloWorld();
+    trailTrap(w);
+    let areaAtDeath = 0;
+    for (let i = 0; i < 60 && !w.awaitingRevive; i++) {
+      areaAtDeath = landArea(w.players[0].land);
+      step(w, NO_INPUT);
+    }
+    expect(w.awaitingRevive).toBe(true);
+    reviveHuman(w);
+    const h = w.players[0];
+    expect(h.alive).toBe(true);
+    expect(landArea(h.land)).toBeCloseTo(areaAtDeath, 6);
+    expect(landContains(h.land, h.pos)).toBe(true);
+    expect(h.prevPos).toEqual(h.pos);
+    expect(h.trail).toEqual([]);
+    expect(h.burn).toBeNull();
+    expect(h.dyingLand).toBeNull();
+    expect(w.revivesLeft).toBe(0);
+    expect(w.awaitingRevive).toBe(false);
+    expect(w.over).toBe(false);
+    expect(h.protectedUntil).toBeCloseTo(w.time + 2, 9);
+    expect(JSON.parse(JSON.stringify(w))).toEqual(w);
+  });
+
+  it('places the head on the land when the centroid is in a hole', () => {
+    const w = soloWorld();
+    // A ring of land: its centroid (the origin) lies in the hole.
+    const ring: MultiPoly = [[circleRing(v(20, 0), 10, 48), circleRing(v(20, 0), 6, 48).reverse()]];
+    knockedOut(w, ring);
+    reviveHuman(w);
+    const h = w.players[0];
+    expect(landContains(h.land, h.pos)).toBe(true);
+    expect(landArea(h.land)).toBeCloseTo(landArea(ring), 6);
+  });
+
+  it('spawns a fresh start circle when no land was left', () => {
+    const w = soloWorld();
+    knockedOut(w, null);
+    reviveHuman(w);
+    const h = w.players[0];
+    expect(h.alive).toBe(true);
+    expect(h.land.length).toBeGreaterThan(0);
+    expect(landContains(h.land, h.pos)).toBe(true);
+  });
+
+  it('protection makes a trail hit on the human harmless for 2 s', () => {
+    const w = soloWorld();
+    knockedOut(w, disk(v(0, 0), 3));
+    reviveHuman(w);
+    const b = trailTrap(w);
+    for (let i = 0; i < 90; i++) {
+      step(w, NO_INPUT);
+      expect(w.events.some((e) => e.type === 'down' || e.type === 'death' || e.type === 'gameover')).toBe(false);
+    }
+    expect(w.players[0].alive).toBe(true);
+    expect(b.kills).toBe(0);
+  });
+
+  it('protection survives a head-on with a bigger rival', () => {
+    const w = soloWorld();
+    knockedOut(w, disk(v(0, 0), 3));
+    reviveHuman(w);
+    const h = w.players[0];
+    h.heading = 0; h.targetHeading = 0;
+    placeBot(w, v(h.pos.x + 0.6, h.pos.y), Math.PI, v(40, 40), 8);
+    step(w, NO_INPUT);
+    expect(h.alive).toBe(true);
+  });
+
+  it('the second death ends the game', () => {
+    const w = soloWorld();
+    knockedOut(w, disk(v(0, 0), 3));
+    reviveHuman(w);
+    while (w.time < w.players[0].protectedUntil + 0.05) step(w, NO_INPUT);
+    trailTrap(w);
+    for (let i = 0; i < 60 && !w.over; i++) step(w, NO_INPUT);
+    expect(w.over).toBe(true);
+    expect(w.awaitingRevive).toBe(false);
+    expect(w.events).toContainEqual({ type: 'death', playerId: 0, killerId: 1, cause: 'trail' });
+    expect(w.events).toContainEqual({ type: 'gameover' });
+  });
+
+  it('declineRevive ends the game with gameover', () => {
+    const w = soloWorld();
+    const b = trailTrap(w);
+    for (let i = 0; i < 60 && !w.awaitingRevive; i++) step(w, NO_INPUT);
+    const land = w.players[0].dyingLand;
+    declineRevive(w);
+    expect(w.over).toBe(true);
+    expect(w.awaitingRevive).toBe(false);
+    expect(w.events).toContainEqual({ type: 'gameover' });
+    // the final death (for the shrink effect); the kill was already credited at the down
+    expect(w.events).toContainEqual({ type: 'death', playerId: 0, killerId: 1, cause: 'trail' });
+    expect(b.kills).toBe(1);
+    expect(w.players[0].dyingLand).toBe(land);
   });
 });

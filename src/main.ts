@@ -79,7 +79,21 @@ function play(prefs: StartPrefs): void {
     humanName: prefs.name,
     humanColor: prefs.color,
     difficulty: prefs.difficulty,
+    onDown: (world, killerName) => {
+      const human = world.players[world.humanId];
+      ui.showRevive({
+        killerName,
+        cause: world.downCause ?? 'self',
+        best: loadBest(prefs.difficulty), // recorded only at the end, so this is the pre-run best
+        kills: human.kills,
+        time: world.time,
+      }, {
+        revive: () => s.revive(),
+        giveUp: () => s.giveUp(),
+      });
+    },
     onOver: (world) => {
+      ui.hideRevive();
       stopHud();
       const human = world.players[world.humanId];
       const run = { pct: s.finalPct(), kills: human.kills, time: world.time };
@@ -92,8 +106,10 @@ function play(prefs: StartPrefs): void {
   });
   session = s;
   refreshHud(s.world);
-  // Frozen once over, so the death-shrink tail doesn't read as 0%.
-  hudTimer = setInterval(() => { if (!s.world.over) refreshHud(s.world); }, HUD_INTERVAL_MS);
+  // Frozen once over (or knocked out), so the death-shrink tail doesn't read as 0%.
+  hudTimer = setInterval(() => {
+    if (!s.world.over && !s.world.awaitingRevive) refreshHud(s.world);
+  }, HUD_INTERVAL_MS);
   s.start();
 }
 

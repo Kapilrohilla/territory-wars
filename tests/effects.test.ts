@@ -63,12 +63,22 @@ describe('createEffects', () => {
     p.dyingLand = square(0, 0, 3);
     p.land = [];
     const fx = createEffects();
-    fx.onEvents([{ type: 'death', playerId: 2, killerId: null }], world, { nudge: () => {} });
+    fx.onEvents([{ type: 'death', playerId: 2, killerId: null, cause: 'self' }], world, { nudge: () => {} });
     expect(fx.busy()).toBe(true);
     p.dyingLand = null; // sim clearing it must not affect the effect
     fx.update(CONFIG.DEATH_SHRINK_S - 0.05);
     expect(fx.busy()).toBe(true);
     fx.update(0.1);
+    expect(fx.busy()).toBe(false);
+  });
+
+  it('a down (revivable) does not start the death shrink', () => {
+    const world = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+    const p = world.players[0];
+    p.dyingLand = square(0, 0, 3);
+    p.land = [];
+    const fx = createEffects();
+    fx.onEvents([{ type: 'down', playerId: 0, killerId: 1, cause: 'trail' }], world, { nudge: () => {} });
     expect(fx.busy()).toBe(false);
   });
 });

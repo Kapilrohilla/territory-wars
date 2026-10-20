@@ -22,6 +22,8 @@ export const CONFIG = {
   SPAWN_MIN_DIST: 20,
   SPAWN_RETRY_S: 1,
   DEATH_SHRINK_S: 0.5,
+  /** After a revive the human can't be killed for this long (s). */
+  REVIVE_PROTECT_S: 2,
   WIN_PCT: 99.5,
   ZOOM_MIN: 20,
   ZOOM_MAX: 30,

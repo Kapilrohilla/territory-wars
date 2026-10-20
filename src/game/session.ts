@@ -2,7 +2,7 @@ import { CONFIG, type Difficulty } from '../sim/config';
 import { createBrains, botInputs } from '../sim/bots';
 import { mulberry32 } from '../sim/rng';
 import { landArea } from '../sim/territory';
-import { createWorld, pct, step, type World } from '../sim/world';
+import { createWorld, declineRevive, pct, reviveHuman, step, type World } from '../sim/world';
 import { createCamera, type Camera } from './camera';
 import { createInput } from './input';
 import { createEffects, type Effects } from './effects';
@@ -23,6 +23,13 @@ export type SessionOpts = {
   onOver?: (world: World) => void;
   /** Optional overview canvas (sized by CSS); redrawn every frame. */
   minimap?: HTMLCanvasElement;
+  /**
+   * Called once, DOWN_DELAY_MS after the human is knocked out with a revive left (so the
+   * hit is seen first). The world is frozen until revive() or giveUp().
+   */
+  onDown?: (world: World, killerName: string | null) => void;
+  /** Asked before each revive; it only happens on true. The hook for a future rewarded ad. */
+  requestRevive?: () => Promise<boolean>;
 };
 
 export type Session = {
@@ -37,10 +44,19 @@ export type Session = {
   stop(): void;
   /** Stops everything and removes every listener. Sessions are one-shot. */
   dispose(): void;
+  /**
+   * Revives the knocked-out human (once per round) if requestRevive agrees, and resumes.
+   * Resolves true when revived.
+   */
+  revive(): Promise<boolean>;
+  /** Declines the revive: the game ends and onOver follows after the usual tail. */
+  giveUp(): void;
 };
 
 /** How long the game keeps rendering after it ends, before onOver. */
 export const OVER_TAIL_MS = 1200;
+/** Delay between the knock-out and onDown, so the hit is visible first. */
+export const DOWN_DELAY_MS = 600;
 const MAX_DPR = 2;
 
 /** Wires world + bots + input + loop + camera + renderer + effects onto a canvas. */
@@ -105,32 +121,51 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   let overNotified = false;
   let finalPct = 0;
 
+  const notifyEvents = () => {
+    // world.events only holds the latest step's (or revive call's) events.
+    if (world.events.length) effects.onEvents(world.events, world, camera);
+  };
+  const recordFinalPct = () => {
+    const h = world.players[world.humanId];
+    const land = h.alive ? h.land : h.dyingLand ?? [];
+    finalPct = (landArea(land) / (Math.PI * CONFIG.ARENA_R * CONFIG.ARENA_R)) * 100;
+  };
+
+  // Knocked out: the world is frozen behind the revive offer; rendering goes on.
+  let downAt: number | null = null;
+  let downNotified = false;
+  let reviveRequested = false;
+
   const stepFn = () => {
-    if (world.over) return;
+    if (world.over || world.awaitingRevive) return;
     snapshotFx(fx, world);
     const inputs = botInputs(world, brains, rng);
     inputs.set(world.humanId, { targetHeading: input.targetHeading() });
     step(world, inputs);
-    // world.events only holds this step's events; hand them over every step.
-    if (world.events.length) effects.onEvents(world.events, world, camera);
-    if (world.over) {
-      const h = world.players[world.humanId];
-      const land = h.alive ? h.land : h.dyingLand ?? [];
-      finalPct = (landArea(land) / (Math.PI * CONFIG.ARENA_R * CONFIG.ARENA_R)) * 100;
-    }
+    notifyEvents();
+    if (world.over) recordFinalPct();
   };
 
   const renderFn = (alpha: number) => {
     const now = performance.now();
     const dt = lastFrame === null ? CONFIG.DT : Math.min(0.1, (now - lastFrame) / 1000);
     lastFrame = now;
-    // Once over, nothing steps: pin interpolation so survivors don't wobble.
-    const a = world.over ? 1 : alpha;
+    // Once over (or frozen), nothing steps: pin interpolation so survivors don't wobble.
+    const a = world.over || world.awaitingRevive ? 1 : alpha;
     lastAlpha = a;
     effects.update(dt);
     const human = world.players[world.humanId];
     camera.update(interpPos(human, a), pct(world, world.humanId), dt);
     paint(a);
+
+    if (world.awaitingRevive && !downNotified) {
+      if (downAt === null) downAt = now;
+      if (now - downAt >= DOWN_DELAY_MS) {
+        downNotified = true;
+        const k = world.downKillerId;
+        opts.onDown?.(world, k === null ? null : world.players[k].name);
+      }
+    }
 
     if (world.over && !overNotified) {
       if (overAt === null) {
@@ -172,6 +207,26 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       stop();
       window.removeEventListener('resize', resize);
       disposeInput();
+    },
+    async revive() {
+      if (disposed || reviveRequested || !world.awaitingRevive) return false;
+      reviveRequested = true; // one revive per round, even across double clicks
+      let ok = false;
+      try { ok = await (opts.requestRevive ?? (async () => true))(); } catch { ok = false; }
+      if (!ok || disposed || !world.awaitingRevive) {
+        reviveRequested = !world.awaitingRevive; // a declined request may be asked again
+        return false;
+      }
+      reviveHuman(world);
+      snapshotFx(fx, world);
+      lastFrame = null;
+      return true;
+    },
+    giveUp() {
+      if (disposed || !world.awaitingRevive) return;
+      declineRevive(world);
+      notifyEvents(); // the final death: the land shrinks during the over-tail
+      recordFinalPct();
     },
   };
 }

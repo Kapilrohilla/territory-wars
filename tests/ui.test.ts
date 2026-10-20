@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildLeaderboard, cleanName, createPctTween, formatPct, formatTime, type BoardEntry,
+  buildLeaderboard, cleanName, countdownFraction, countdownSeconds, createPctTween, formatPct, formatTime,
+  reviveSubtitle, type BoardEntry,
 } from '../src/ui/screens';
 
 const e = (id: number, pct: number, isHuman = false): BoardEntry => ({ id, name: `P${id}`, colorIndex: id, pct, isHuman });
@@ -84,5 +85,30 @@ describe('pct tween', () => {
     t.set(10, 0);
     t.set(10, 250);
     expect(t.value(300)).toBe(10);
+  });
+});
+
+describe('revive modal helpers', () => {
+  it('shows whole seconds remaining, rounded up, never below 0', () => {
+    expect(countdownSeconds(5000)).toBe(5);
+    expect(countdownSeconds(4999)).toBe(5);
+    expect(countdownSeconds(4001)).toBe(5);
+    expect(countdownSeconds(4000)).toBe(4);
+    expect(countdownSeconds(1)).toBe(1);
+    expect(countdownSeconds(0)).toBe(0);
+    expect(countdownSeconds(-20)).toBe(0);
+  });
+  it('gives the ring fraction left, clamped to [0, 1]', () => {
+    expect(countdownFraction(5000, 5000)).toBe(1);
+    expect(countdownFraction(2500, 5000)).toBe(0.5);
+    expect(countdownFraction(-1, 5000)).toBe(0);
+    expect(countdownFraction(6000, 5000)).toBe(1);
+  });
+  it('words the subtitle by cause', () => {
+    expect(reviveSubtitle('trail', 'Mango')).toEqual({ pre: 'Rival ', name: 'Mango', post: ' crossed your trail' });
+    expect(reviveSubtitle('headon', 'Kiwi')).toEqual({ pre: 'Rival ', name: 'Kiwi', post: ' crashed into you' });
+    expect(reviveSubtitle('captured', 'Kiwi')).toEqual({ pre: 'Rival ', name: 'Kiwi', post: ' crashed into you' });
+    expect(reviveSubtitle('self', null)).toEqual({ pre: 'You crossed your own trail', name: '', post: '' });
+    expect(reviveSubtitle('trail', null)).toEqual({ pre: 'You crossed your own trail', name: '', post: '' });
   });
 });

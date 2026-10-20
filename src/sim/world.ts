@@ -6,7 +6,7 @@ import {
 import { captureLand, keepPiece, landArea, landContains, subtractLand } from './territory';
 import { mulberryNext } from './rng';
 import { NAMES } from './names';
-import type { GameEvent, Input, Player, World } from './types';
+import type { DeathCause, GameEvent, Input, Player, World } from './types';
 
 export type { GameEvent, Input, Player, World } from './types';
 
@@ -109,6 +109,7 @@ function newPlayer(id: number, name: string, colorIndex: number, isHuman: boolea
     respawnAt: null,
     dyingLand: null,
     burn: null,
+    protectedUntil: 0,
   };
 }
 
@@ -118,6 +119,7 @@ export function createWorld(opts: {
   const world: World = {
     time: 0, players: [], humanId: 0, events: [], over: false, won: false,
     seed: opts.seed, difficulty: opts.difficulty ?? 'normal', rngState: opts.seed >>> 0,
+    revivesLeft: 1, awaitingRevive: false, downKillerId: null, downCause: null,
   };
   const rng = worldRng(world);
   const humanColor = ((opts.humanColor % COLOR_COUNT) + COLOR_COUNT) % COLOR_COUNT;
@@ -159,12 +161,18 @@ function bbox(m: MultiPoly): Box {
 }
 const boxesOverlap = (a: Box, b: Box) => a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1;
 
-/** Records a pending death; the first recorded killer wins. */
-function markDead(pending: Map<number, number | null>, victim: number, killer: number | null) {
-  if (!pending.has(victim)) pending.set(victim, killer === victim ? null : killer);
+type Kill = { killerId: number | null; cause: DeathCause };
+type Pending = Map<number, Kill>;
+
+/** Records a pending death; the first recorded killer (and cause) wins. */
+function markDead(pending: Pending, victim: number, killer: number | null, cause: DeathCause) {
+  if (!pending.has(victim)) pending.set(victim, { killerId: killer === victim ? null : killer, cause });
 }
 
-function capture(world: World, p: Player, pending: Map<number, number | null>) {
+/** Freshly revived players can't be killed for a moment. */
+const isProtected = (world: World, p: Player) => world.time < p.protectedUntil;
+
+function capture(world: World, p: Player, pending: Pending) {
   const before = pct(world, p.id);
   const oldLand = p.land;
   const nearWall = p.trail.some((q) => q.x * q.x + q.y * q.y > CLIP_NEAR_R * CLIP_NEAR_R);
@@ -177,10 +185,10 @@ function capture(world: World, p: Player, pending: Map<number, number | null>) {
   const region = subtractLand(newLand, oldLand);
   for (const q of world.players) {
     if (q === p || !q.alive) continue;
-    if (landContains(region, q.pos)) markDead(pending, q.id, p.id);
+    if (landContains(region, q.pos)) markDead(pending, q.id, p.id, 'captured');
     if (q.land.length === 0 || !boxesOverlap(box, bbox(q.land))) continue;
     q.land = keepPiece(subtractLand(q.land, newLand), q.pos);
-    if (q.land.length === 0) markDead(pending, q.id, p.id);
+    if (q.land.length === 0) markDead(pending, q.id, p.id, 'captured');
   }
   world.events.push({ type: 'capture', playerId: p.id, gainedPct: pct(world, p.id) - before, region });
 }
@@ -206,7 +214,7 @@ function moveInside(p: Player, d: number): void {
 }
 
 /** Turn, move, clamp, extend trail, capture on re-entry. */
-function advance(world: World, p: Player, input: Input | undefined, pending: Map<number, number | null>) {
+function advance(world: World, p: Player, input: Input | undefined, pending: Pending) {
   if (input && input.targetHeading !== null) p.targetHeading = wrap(input.targetHeading);
   const rate = p.isHuman ? CONFIG.TURN_HUMAN : DIFFICULTY[world.difficulty].botTurnRate;
   const dtTurn = Math.min(CONFIG.DT, CONFIG.TURN_DT_CAP);
@@ -263,7 +271,7 @@ function lengthAt(q: Vec, a: Vec, b: Vec, sa: number): number {
 }
 
 /** Spreads every burn by BURN_SPEED·DT both ways; a burn that reaches the head kills. */
-function advanceBurns(world: World, alive: Player[], pending: Map<number, number | null>) {
+function advanceBurns(world: World, alive: Player[], pending: Pending) {
   const d = DIFFICULTY[world.difficulty].burnSpeed * CONFIG.DT;
   for (const p of alive) {
     const b = p.burn;
@@ -271,17 +279,18 @@ function advanceBurns(world: World, alive: Player[], pending: Map<number, number
     const len = trailLength(p);
     b.back = Math.max(0, b.back - d);
     b.front = Math.min(len, b.front + d);
-    if (b.front >= len - 1e-9) markDead(pending, p.id, b.killerId);
+    if (b.front >= len - 1e-9) markDead(pending, p.id, b.killerId, 'trail');
   }
 }
 
 /**
  * Where a's head segment crosses b's rival trail, as a path length along it, or null.
  * A trail that is already burning is ignored: the first hitter keeps the credit.
+ * A protected (just revived) owner's trail can't be set alight.
  */
-function trailHitAt(a: Player, b: Player): number | null {
+function trailHitAt(world: World, a: Player, b: Player): number | null {
   const t = b.trail;
-  if (t.length === 0 || b.burn) return null;
+  if (t.length === 0 || b.burn || isProtected(world, b)) return null;
   const p0 = a.prevPos, p1 = a.pos;
   for (let i = 0; i < t.length; i++) {
     const end = i + 1 < t.length ? t[i + 1] : b.pos;
@@ -311,15 +320,15 @@ function hitsOwnTrail(p: Player): boolean {
   return false;
 }
 
-function resolveCollisions(world: World, alive: Player[], pending: Map<number, number | null>) {
+function resolveCollisions(world: World, alive: Player[], pending: Pending) {
   for (const a of alive) {
     for (const b of alive) {
       if (a === b) {
-        if (hitsOwnTrail(a)) markDead(pending, a.id, a.id);
+        if (hitsOwnTrail(a)) markDead(pending, a.id, a.id, 'self');
         continue;
       }
       // A rival trail hit doesn't kill outright: it sets the trail burning from the hit point.
-      const s = trailHitAt(a, b);
+      const s = trailHitAt(world, a, b);
       if (s !== null) b.burn = { s0: s, back: s, front: s, killerId: a.id };
     }
   }
@@ -330,18 +339,23 @@ function resolveCollisions(world: World, alive: Player[], pending: Map<number, n
       const aa = landArea(a.land), ba = landArea(b.land);
       const eps = 1e-6 * Math.max(aa, ba, 1);
       if (Math.abs(aa - ba) <= eps) {
-        markDead(pending, a.id, b.id);
-        markDead(pending, b.id, a.id);
-      } else if (aa < ba) markDead(pending, a.id, b.id);
-      else markDead(pending, b.id, a.id);
+        markDead(pending, a.id, b.id, 'headon');
+        markDead(pending, b.id, a.id, 'headon');
+      } else if (aa < ba) markDead(pending, a.id, b.id, 'headon');
+      else markDead(pending, b.id, a.id, 'headon');
     }
   }
 }
 
-function applyDeaths(world: World, pending: Map<number, number | null>) {
-  for (const [id, killerId] of pending) {
+/**
+ * Kills every pending victim (protected players are spared). The human's first death is a
+ * "down" instead: the land moves to dyingLand as usual and the killer is credited now, but
+ * the world freezes (awaitingRevive) until reviveHuman or declineRevive.
+ */
+function applyDeaths(world: World, pending: Pending) {
+  for (const [id, { killerId, cause }] of pending) {
     const p = world.players[id];
-    if (!p.alive) continue;
+    if (!p.alive || isProtected(world, p)) continue;
     p.alive = false;
     p.trail = [];
     p.burn = null;
@@ -350,7 +364,14 @@ function applyDeaths(world: World, pending: Map<number, number | null>) {
     p.deathTime = world.time;
     p.respawnAt = p.isHuman ? null : world.time + CONFIG.BOT_RESPAWN_S;
     if (killerId !== null) world.players[killerId].kills++;
-    world.events.push({ type: 'death', playerId: id, killerId });
+    if (p.isHuman && world.revivesLeft > 0) {
+      world.awaitingRevive = true;
+      world.downKillerId = killerId;
+      world.downCause = cause;
+      world.events.push({ type: 'down', playerId: id, killerId, cause });
+    } else {
+      world.events.push({ type: 'death', playerId: id, killerId, cause });
+    }
   }
 }
 
@@ -373,10 +394,10 @@ function housekeeping(world: World) {
 
 /** Advances the world by CONFIG.DT. world.events holds only this tick's events. */
 export function step(world: World, inputs: Map<number, Input>): void {
-  if (world.over) return;
+  if (world.over || world.awaitingRevive) return;
   world.events = [];
   world.time += CONFIG.DT;
-  const pending = new Map<number, number | null>();
+  const pending: Pending = new Map();
 
   const alive = world.players.filter((p) => p.alive);
   for (const p of alive) advance(world, p, inputs.get(p.id), pending);
@@ -386,6 +407,7 @@ export function step(world: World, inputs: Map<number, Input>): void {
   housekeeping(world);
 
   const human = world.players[world.humanId];
+  if (world.awaitingRevive) return; // frozen behind the revive offer
   if (!human.alive) {
     world.over = true;
     world.events.push({ type: 'gameover' });
@@ -394,4 +416,89 @@ export function step(world: World, inputs: Map<number, Input>): void {
     world.over = true;
     world.events.push({ type: 'win' });
   }
+}
+
+/** Area-weighted centroid of a polygon's outer ring (first vertex for a degenerate ring). */
+function ringCentroid(r: Vec[]): Vec {
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const cross = r[j].x * r[i].y - r[i].x * r[j].y;
+    a += cross;
+    cx += (r[j].x + r[i].x) * cross;
+    cy += (r[j].y + r[i].y) * cross;
+  }
+  return Math.abs(a) > 1e-9 ? { x: cx / (3 * a), y: cy / (3 * a) } : { ...r[0] };
+}
+
+const REVIVE_GRID = 32;
+
+/**
+ * A point inside `land`: the centroid of its largest polygon when that lies inside the
+ * land, otherwise the interior grid sample (over that polygon's bbox) closest to it.
+ */
+export function pointInLand(land: MultiPoly): Vec | null {
+  let best = land[0], bestA = -1;
+  for (const poly of land) {
+    const a = landArea([poly]);
+    if (a > bestA) { bestA = a; best = poly; }
+  }
+  const outer = best?.[0];
+  if (!outer || outer.length < 3) return null;
+  const c = ringCentroid(outer);
+  if (landContains(land, c)) return c;
+  const b = bbox([best]);
+  let found: Vec | null = null, foundD = Infinity;
+  for (let i = 0; i <= REVIVE_GRID; i++) {
+    for (let j = 0; j <= REVIVE_GRID; j++) {
+      const q = { x: b.x0 + ((b.x1 - b.x0) * (i + 0.5)) / (REVIVE_GRID + 1), y: b.y0 + ((b.y1 - b.y0) * (j + 0.5)) / (REVIVE_GRID + 1) };
+      const d = dist(q, c);
+      if (d < foundD && landContains(land, q)) { found = q; foundD = d; }
+    }
+  }
+  return found;
+}
+
+/**
+ * Brings the knocked-out human back: the land held at death is restored (nothing moved
+ * while frozen, so it overlaps no one), the head is placed inside it, and the human is
+ * protected for REVIVE_PROTECT_S. With no land left, a fresh start circle is spawned.
+ */
+export function reviveHuman(world: World): void {
+  if (!world.awaitingRevive) return;
+  const h = world.players[world.humanId];
+  const land = h.dyingLand;
+  const at = land && land.length > 0 ? pointInLand(land) : null;
+  if (land && at) {
+    h.land = land;
+    h.pos = at;
+    h.prevPos = { ...at };
+  } else if (!spawnPlayer(world, h, worldRng(world))) {
+    // No clear spot anywhere (practically impossible): come back where we fell.
+    h.land = startLand(h.pos);
+    h.prevPos = { ...h.pos };
+  }
+  h.alive = true;
+  h.trail = [];
+  h.burn = null;
+  h.dyingLand = null;
+  h.deathTime = null;
+  h.protectedUntil = world.time + CONFIG.REVIVE_PROTECT_S;
+  world.revivesLeft--;
+  world.awaitingRevive = false;
+  world.downKillerId = null;
+  world.downCause = null;
+  world.events = [];
+}
+
+/** Turns down the revive: the down becomes the final death and the game ends. */
+export function declineRevive(world: World): void {
+  if (!world.awaitingRevive) return;
+  const h = world.players[world.humanId];
+  world.awaitingRevive = false;
+  world.over = true;
+  // Kill credit was given at the down; this death is the final one (effects shrink the land).
+  world.events = [
+    { type: 'death', playerId: h.id, killerId: world.downKillerId, cause: world.downCause ?? 'self' },
+    { type: 'gameover' },
+  ];
 }

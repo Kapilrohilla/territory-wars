@@ -26,13 +26,24 @@ export type Player = {
    * from it. The range [back, front] is burnt and harmless. Null when not burning.
    */
   burn: Burn | null;
+  /** World time until which this player can't be killed (after a revive); 0 = never protected. */
+  protectedUntil: number;
 };
 
 export type Burn = { s0: number; back: number; front: number; killerId: number };
 
+/**
+ * What killed a player: a burn reaching the head ('trail'), crossing one's own trail
+ * ('self'), a head-on collision ('headon'), or a rival's capture ('captured': head inside
+ * the newly captured region, or all land taken).
+ */
+export type DeathCause = 'trail' | 'self' | 'headon' | 'captured';
+
 export type GameEvent =
   | { type: 'capture'; playerId: number; gainedPct: number; region: MultiPoly }
-  | { type: 'death'; playerId: number; killerId: number | null }
+  | { type: 'death'; playerId: number; killerId: number | null; cause: DeathCause }
+  /** The human was knocked out but may still be revived (the world is frozen meanwhile). */
+  | { type: 'down'; playerId: number; killerId: number | null; cause: DeathCause }
   | { type: 'win' }
   | { type: 'gameover' };
 
@@ -47,4 +58,12 @@ export type World = {
   difficulty: Difficulty;
   /** mulberry32 state; advanced by every world-owned random draw. */
   rngState: number;
+  /** Revives the human has left this round. */
+  revivesLeft: number;
+  /** The human is knocked out and the revive offer is open: step() does nothing. */
+  awaitingRevive: boolean;
+  /** Who knocked the human out (null for a self-kill); set at the down. */
+  downKillerId: number | null;
+  /** How the human was knocked out; set at the down. */
+  downCause: DeathCause | null;
 };

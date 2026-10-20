@@ -108,11 +108,34 @@ function drawArena(ctx: CanvasRenderingContext2D, cam: Camera, s: number): void 
   ctx.stroke();
 }
 
+/**
+ * The land to draw for p: its land, or, while the human is knocked out awaiting a revive,
+ * the land it held at the down (it may come straight back, so it stays put meanwhile).
+ */
+export function shownLand(world: World, p: Player): MultiPoly {
+  if (p.isHuman && world.awaitingRevive && !p.alive) return p.dyingLand ?? [];
+  return p.land;
+}
+
+/** Players whose head is drawn: the living, plus the knocked-out human awaiting a revive. */
+export function shownHeads(world: World): Player[] {
+  return world.players.filter((p) => p.alive || (p.isHuman && world.awaitingRevive));
+}
+
+const PROTECT_BLINK_HZ = 6;
+
+/** Head opacity: pulses at PROTECT_BLINK_HZ while p is protected after a revive. */
+export function headAlpha(world: World, p: Player): number {
+  if (world.time >= p.protectedUntil) return 1;
+  return 0.25 + 0.75 * (0.5 + 0.5 * Math.cos(world.time * PROTECT_BLINK_HZ * Math.PI * 2));
+}
+
 // Dying land is drawn (shrinking) by the effects layer, not here.
 function drawLands(ctx: CanvasRenderingContext2D, world: World, effects?: Effects): void {
   const items: { path: Path2D; p: Player }[] = [];
   for (const p of world.players) {
-    if (p.land.length) items.push({ path: maskedPath(p.land, effects?.landMask(p.id)), p });
+    const land = shownLand(world, p);
+    if (land.length) items.push({ path: maskedPath(land, effects?.landMask(p.id)), p });
   }
   // All lips first, then all tops: a neighbour's top occludes the lip below it.
   ctx.save();
@@ -268,13 +291,17 @@ export function render(
   drawLands(ctx, world, effects);
   effects?.drawWorld(ctx);
 
-  const alive = world.players.filter((p) => p.alive);
+  const alive = shownHeads(world);
   const heads = new Map<number, Vec>();
   for (const p of alive) heads.set(p.id, interpPos(p, alpha));
   for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!, world.time);
   // Human last so it stays on top.
   const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
-  for (const p of order) drawHead(ctx, p, heads.get(p.id)!, interpHeading(fx, p, alpha));
+  for (const p of order) {
+    ctx.globalAlpha = headAlpha(world, p);
+    drawHead(ctx, p, heads.get(p.id)!, interpHeading(fx, p, alpha));
+  }
+  ctx.globalAlpha = 1;
   ctx.restore();
 
   // Names in screen space so text size is independent of zoom.

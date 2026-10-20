@@ -1,7 +1,7 @@
 import { PALETTE } from '../game/palette';
 import { pct } from '../sim/world';
 import { DIFFICULTIES, type Difficulty } from '../sim/config';
-import type { World } from '../sim/types';
+import type { DeathCause, World } from '../sim/types';
 import type { BestScore } from './best';
 
 // ---------- pure helpers (unit-tested) ----------
@@ -69,6 +69,23 @@ export function createPctTween(durationMs = 300): PctTween {
   };
 }
 
+/** Whole seconds left on a countdown, rounded up (5000 ms → 5, 4001 ms → 5, 0 → 0). */
+export function countdownSeconds(remainingMs: number): number {
+  return Math.max(0, Math.ceil(remainingMs / 1000));
+}
+
+/** Share of the countdown still left, for the ring, in [0, 1]. */
+export function countdownFraction(remainingMs: number, totalMs: number): number {
+  if (totalMs <= 0) return 0;
+  return Math.min(1, Math.max(0, remainingMs / totalMs));
+}
+
+/** Revive-modal subtitle, split so the rival's name can be bold: pre + <b>name</b> + post. */
+export function reviveSubtitle(cause: DeathCause, killerName: string | null): { pre: string; name: string; post: string } {
+  if (killerName === null || cause === 'self') return { pre: 'You crossed your own trail', name: '', post: '' };
+  return { pre: 'Rival ', name: killerName, post: cause === 'trail' ? ' crossed your trail' : ' crashed into you' };
+}
+
 export const NAME_MAX = 14;
 export const DEFAULT_NAME = 'You';
 
@@ -86,6 +103,23 @@ export type OverStats = {
 
 const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
 
+/** How long the revive offer stays open before it gives up by itself. */
+export const REVIVE_COUNTDOWN_MS = 5000;
+
+export type ReviveInfo = {
+  killerName: string | null;
+  cause: DeathCause;
+  /** Best score for the current difficulty (before this run). */
+  best: BestScore | null;
+  kills: number;
+  time: number;
+};
+export type ReviveHandlers = {
+  /** Resolves true once revived; false leaves the offer open. */
+  revive(): Promise<boolean>;
+  giveUp(): void;
+};
+
 export type Screens = {
   /** Home screen: best score (for the selected difficulty), name, colour, difficulty and Play. */
   showStart(
@@ -101,6 +135,9 @@ export type Screens = {
   /** Advances the % counter animation; returns true while it is still animating. */
   tickHud(now: number): boolean;
   showOver(stats: OverStats, onAgain: () => void, onHome: () => void): void;
+  /** Revive modal over the (frozen) game and HUD, with a REVIVE_COUNTDOWN_MS countdown. */
+  showRevive(info: ReviveInfo, handlers: ReviveHandlers): void;
+  hideRevive(): void;
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -300,9 +337,140 @@ export function createScreens(root: HTMLElement): Screens {
   againBtn.addEventListener('click', () => leaveOver('again'));
   homeBtn.addEventListener('click', () => leaveOver('home'));
 
-  root.append(hud, start, over);
+  // ----- revive -----
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const svg = (tag: string, attrs: Record<string, string>) => {
+    const e = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  };
+  const revive = el('div', 'tw-screen tw-revive');
+  revive.setAttribute('role', 'dialog');
+  revive.setAttribute('aria-modal', 'true');
+  revive.setAttribute('aria-labelledby', 'tw-revive-title');
+  const reviveCard = el('div', 'tw-card tw-revive-card');
+  const closeBtn = el('button', 'tw-revive-close', '✕');
+  closeBtn.type = 'button';
+  closeBtn.setAttribute('aria-label', 'Close and view results');
+  const pill = el('div', 'tw-ko-pill');
+  pill.append(el('span', 'tw-ko-icon', '!'), document.createTextNode('Knocked out!'));
+  const reviveTitle = el('h2', 'tw-revive-title', 'Knocked out!');
+  reviveTitle.id = 'tw-revive-title';
+  const reviveSub = el('p', 'tw-revive-sub');
+  const ring = el('div', 'tw-ring');
+  ring.setAttribute('role', 'timer');
+  const RING_R = 44;
+  const RING_C = 2 * Math.PI * RING_R;
+  const ringSvg = svg('svg', { viewBox: '0 0 100 100', 'aria-hidden': 'true' });
+  ringSvg.append(svg('circle', { class: 'tw-ring-track', cx: '50', cy: '50', r: String(RING_R) }));
+  const ringArc = svg('circle', {
+    class: 'tw-ring-arc', cx: '50', cy: '50', r: String(RING_R),
+    'stroke-dasharray': RING_C.toFixed(2), transform: 'rotate(-90 50 50)',
+  });
+  ringSvg.append(ringArc);
+  const ringNum = el('div', 'tw-ring-num', '5');
+  ring.append(ringSvg, ringNum, el('div', 'tw-ring-sec', 'SEC'));
+  const reviveStats = el('div', 'tw-revive-stats');
+  const rstat = (label: string) => {
+    const box = el('div', 'tw-revive-stat');
+    const v = el('div', 'tw-revive-stat-value');
+    box.append(el('div', 'tw-revive-stat-label', label), v);
+    reviveStats.append(box);
+    return v;
+  };
+  const rBest = rstat('Best');
+  const rKills = rstat('Kills');
+  const rTime = rstat('Time');
+  const reviveBtn = el('button', 'tw-btn tw-revive-btn');
+  reviveBtn.type = 'button';
+  const reviveIcon = svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true', class: 'tw-revive-icon' });
+  reviveIcon.append(svg('path', {
+    d: 'M12 21s-7.5-4.6-9.3-9.2C1.4 8.4 3.6 5 7 5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.4 0 5.6 3.4 4.3 6.8C19.5 16.4 12 21 12 21z',
+  }));
+  reviveBtn.append(reviveIcon, document.createTextNode('Revive'));
+  const reviveCaption = el('p', 'tw-revive-caption', 'Keep 100% of your territory · once per round');
+  const noThanks = el('button', 'tw-link', 'No thanks, view results');
+  noThanks.type = 'button';
+  reviveCard.append(closeBtn, pill, reviveTitle, reviveSub, ring, reviveStats, reviveBtn, reviveCaption, noThanks);
+  revive.append(reviveCard);
+  revive.hidden = true;
+
+  // One offer at a time: `offer` is null once it is settled (revived or given up).
+  let offer: { handlers: ReviveHandlers; remaining: number; deadline: number; pending: boolean } | null = null;
+  let reviveFrame: number | null = null;
+  const stopCountdown = () => {
+    if (reviveFrame !== null) cancelAnimationFrame(reviveFrame);
+    reviveFrame = null;
+  };
+  const drawCountdown = (remaining: number) => {
+    setText(ringNum, String(countdownSeconds(remaining)));
+    ringArc.setAttribute('stroke-dashoffset', (RING_C * (1 - countdownFraction(remaining, REVIVE_COUNTDOWN_MS))).toFixed(2));
+  };
+  const closeRevive = () => {
+    stopCountdown();
+    offer = null;
+    revive.hidden = true;
+    document.removeEventListener('keydown', onReviveKey);
+  };
+  const giveUp = () => {
+    if (!offer) return;
+    const h = offer.handlers;
+    closeRevive();
+    h.giveUp();
+  };
+  const tickCountdown = (now: number) => {
+    reviveFrame = null;
+    if (!offer || offer.pending) return;
+    offer.remaining = offer.deadline - now;
+    drawCountdown(offer.remaining);
+    if (offer.remaining <= 0) { giveUp(); return; }
+    reviveFrame = requestAnimationFrame(tickCountdown);
+  };
+  const runCountdown = () => {
+    if (!offer) return;
+    offer.deadline = performance.now() + offer.remaining;
+    stopCountdown();
+    reviveFrame = requestAnimationFrame(tickCountdown);
+  };
+  const setPending = (on: boolean) => {
+    reviveBtn.disabled = on;
+    reviveCard.classList.toggle('tw-pending', on);
+  };
+  const doRevive = async () => {
+    const o = offer;
+    if (!o || o.pending) return; // guards double clicks / Enter + click
+    o.pending = true;
+    stopCountdown(); // the clock waits while the revive is being requested
+    setPending(true);
+    let ok = false;
+    try { ok = await o.handlers.revive(); } catch { ok = false; }
+    if (offer !== o) return; // gave up meanwhile
+    setPending(false);
+    if (ok) { closeRevive(); return; }
+    o.pending = false;
+    runCountdown();
+  };
+  function onReviveKey(e: KeyboardEvent) {
+    if (!offer) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      giveUp();
+    } else if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement && revive.contains(e.target))) {
+      // A focused modal button handles Enter itself (as a click).
+      e.preventDefault();
+      void doRevive();
+    }
+  }
+  reviveBtn.addEventListener('click', () => { void doRevive(); });
+  noThanks.addEventListener('click', giveUp);
+  closeBtn.addEventListener('click', giveUp);
+
+  root.append(hud, start, over, revive);
   const all = [start, hud, over];
-  const only = (shown: HTMLElement) => { for (const e of all) e.hidden = e !== shown; };
+  const only = (shown: HTMLElement) => {
+    for (const e of all) e.hidden = e !== shown;
+    if (offer) closeRevive();
+  };
   only(start);
 
   return {
@@ -363,6 +531,25 @@ export function createScreens(root: HTMLElement): Screens {
       onHomeCb = onHome;
       only(over);
       againBtn.focus({ preventScroll: true });
+    },
+    showRevive(info, handlers) {
+      if (offer) closeRevive();
+      const sub = reviveSubtitle(info.cause, info.killerName);
+      reviveSub.replaceChildren(document.createTextNode(sub.pre));
+      if (sub.name) reviveSub.append(el('b', undefined, sub.name), document.createTextNode(sub.post));
+      setText(rBest, info.best ? formatPct(info.best.pct, 1) : '—');
+      setText(rKills, String(info.kills));
+      setText(rTime, formatTime(info.time));
+      offer = { handlers, remaining: REVIVE_COUNTDOWN_MS, deadline: 0, pending: false };
+      setPending(false);
+      drawCountdown(REVIVE_COUNTDOWN_MS);
+      revive.hidden = false;
+      document.addEventListener('keydown', onReviveKey);
+      reviveBtn.focus({ preventScroll: true });
+      runCountdown();
+    },
+    hideRevive() {
+      if (offer) closeRevive();
     },
   };
 }
