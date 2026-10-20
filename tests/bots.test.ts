@@ -81,6 +81,28 @@ describe('bots', () => {
     expect(Math.abs(angleDiff(inp.get(1)!.targetHeading!, 0))).toBeLessThan(0.5);
   });
 
+  it('hunt range scales with difficulty', () => {
+    const run = (difficulty: 'easy' | 'normal' | 'hard', trailX: number) => {
+      const w = setup(1, true);
+      w.difficulty = difficulty;
+      const b = w.players[1];
+      b.pos = v(-30, 0); b.prevPos = v(-30, 0); b.heading = 0; b.targetHeading = 0;
+      b.land = disk(v(-30, 0), 3);
+      const h = w.players[0];
+      h.pos = v(trailX, 6); h.prevPos = v(trailX, 6);
+      h.land = disk(v(trailX, 12), 3);
+      h.trail = [];
+      for (let y = -6; y <= 6; y += 0.25) h.trail.push(v(trailX, y));
+      const brains = createBrains(w);
+      botInputs(w, brains, mulberry32(3));
+      return brains.get(1)!.state;
+    };
+    expect(run('hard', -16)).toBe('hunt'); // 14 u ahead, hard reach 16 u
+    expect(run('normal', -16)).not.toBe('hunt'); // normal reach 10 u
+    expect(run('normal', -22)).toBe('hunt'); // 8 u ahead
+    expect(run('easy', -22)).not.toBe('hunt'); // easy reach 5 u
+  });
+
   it('bot with a burning trail returns home instead of hunting', () => {
     const w = setup(1, true);
     const b = w.players[1];

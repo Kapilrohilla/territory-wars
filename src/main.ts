@@ -1,12 +1,14 @@
 import { createSession, type Session } from './game/session';
 import { unlockAudio } from './game/sound';
 import { PALETTE } from './game/palette';
+import { DIFFICULTIES, type Difficulty } from './sim/config';
 import { loadBest, recordRun } from './ui/best';
 import { cleanName, createScreens, DEFAULT_NAME, type StartPrefs } from './ui/screens';
 
 const HUD_INTERVAL_MS = 100;
 const NAME_KEY = 'territory-wars.name';
 const COLOR_KEY = 'territory-wars.color';
+const DIFFICULTY_KEY = 'territory-wars.difficulty';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const ui = createScreens(document.getElementById('ui') as HTMLElement);
@@ -14,19 +16,23 @@ const ui = createScreens(document.getElementById('ui') as HTMLElement);
 function loadPrefs(): StartPrefs {
   let name = DEFAULT_NAME;
   let color = 0;
+  let difficulty: Difficulty = 'normal';
   try {
     const n = localStorage.getItem(NAME_KEY);
     if (n) name = cleanName(n);
     const c = Number(localStorage.getItem(COLOR_KEY));
     if (Number.isInteger(c) && c >= 0 && c < PALETTE.players.length) color = c;
+    const d = localStorage.getItem(DIFFICULTY_KEY) as Difficulty | null;
+    if (d && DIFFICULTIES.includes(d)) difficulty = d;
   } catch { /* storage unavailable */ }
-  return { name, color };
+  return { name, color, difficulty };
 }
 
 function savePrefs(p: StartPrefs): void {
   try {
     localStorage.setItem(NAME_KEY, p.name);
     localStorage.setItem(COLOR_KEY, String(p.color));
+    localStorage.setItem(DIFFICULTY_KEY, p.difficulty);
   } catch { /* storage unavailable */ }
 }
 
@@ -57,7 +63,7 @@ function refreshHud(world: Session['world']): void {
 }
 
 function toStart(): void {
-  ui.showStart(loadPrefs(), loadBest(), (prefs) => {
+  ui.showStart(loadPrefs(), loadBest, (prefs) => {
     unlockAudio(); // inside the click gesture
     savePrefs(prefs);
     play(prefs);
@@ -72,12 +78,13 @@ function play(prefs: StartPrefs): void {
     minimap: ui.minimap,
     humanName: prefs.name,
     humanColor: prefs.color,
+    difficulty: prefs.difficulty,
     onOver: (world) => {
       stopHud();
       const human = world.players[world.humanId];
       const run = { pct: s.finalPct(), kills: human.kills, time: world.time };
-      const newBest = recordRun(run);
-      ui.showOver({ ...run, won: world.won, newBest }, () => {
+      const newBest = recordRun(run, prefs.difficulty);
+      ui.showOver({ ...run, won: world.won, newBest, difficulty: prefs.difficulty }, () => {
         unlockAudio();
         play(prefs);
       }, toStart);

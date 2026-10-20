@@ -1,4 +1,4 @@
-import { CONFIG } from '../sim/config';
+import { CONFIG, type Difficulty } from '../sim/config';
 import { createBrains, botInputs } from '../sim/bots';
 import { mulberry32 } from '../sim/rng';
 import { landArea } from '../sim/territory';
@@ -14,6 +14,7 @@ export type SessionOpts = {
   seed?: number;
   humanName?: string;
   humanColor?: number;
+  difficulty?: Difficulty;
   /**
    * Called once, OVER_TAIL_MS after world.over becomes true (effects such as
    * the human's death shrink finish first). The loop is stopped and input
@@ -49,6 +50,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     seed,
     humanName: opts.humanName ?? 'You',
     humanColor: opts.humanColor ?? 0,
+    difficulty: opts.difficulty ?? 'normal',
   });
   const brains = createBrains(world);
   const rng = mulberry32(seed ^ 0x9e3779b9);

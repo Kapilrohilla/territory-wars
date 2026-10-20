@@ -27,3 +27,30 @@ export const CONFIG = {
   ZOOM_MAX: 30,
   ZOOM_FULL_PCT: 50,
 } as const;
+
+export type Difficulty = 'easy' | 'normal' | 'hard';
+export const DIFFICULTIES: readonly Difficulty[] = ['easy', 'normal', 'hard'];
+
+export type DifficultyTuning = {
+  botCount: number;
+  /** Bot steering rate (like CONFIG.TURN_HUMAN). */
+  botTurnRate: number;
+  /** Scales the bots' hunt ray lengths. */
+  huntRangeMul: number;
+  /** A bot with a trail longer than this (u) stops hunting and heads home. */
+  cautionTrail: number;
+  /** Longest leg (u) of a bot's planned trip. */
+  waypointMax: number;
+  /** Speed (u/s) of each front of a burning trail. */
+  burnSpeed: number;
+};
+
+/** Normal is the baseline (the CONFIG defaults); easy and hard scale around it. */
+export const DIFFICULTY: Record<Difficulty, DifficultyTuning> = {
+  easy: { botCount: 8, botTurnRate: 3, huntRangeMul: 0.5, cautionTrail: 18, waypointMax: 11, burnSpeed: 30 },
+  normal: {
+    botCount: CONFIG.BOT_COUNT, botTurnRate: CONFIG.TURN_BOT, huntRangeMul: 1,
+    cautionTrail: 25, waypointMax: 15, burnSpeed: CONFIG.BURN_SPEED,
+  },
+  hard: { botCount: 14, botTurnRate: 6, huntRangeMul: 1.6, cautionTrail: 34, waypointMax: 20, burnSpeed: 55 },
+};

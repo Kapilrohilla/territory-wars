@@ -1,4 +1,4 @@
-import { CONFIG } from './config';
+import { CONFIG, DIFFICULTY } from './config';
 import {
   type Ring, type Vec,
   angleDiff, distPointSeg, pointInRing, segIntersect,
@@ -15,7 +15,6 @@ export type BotBrain = {
 };
 
 // Tuning constants.
-const CAUTION_TRAIL_LEN = 25; // u
 const CAUTION_HUMAN_DIST = 12; // u
 const HUNT_AHEAD_LEN = 10; // u
 const HUNT_SIDE_LEN = 15; // u
@@ -25,7 +24,6 @@ const WALL_PULL = 1.5;
 const SELF_LOOKAHEAD = 3; // u
 const SELF_ROTATE = Math.PI / 3; // 60 deg
 const WAYPOINT_MIN = 3;
-const WAYPOINT_MAX = 15;
 const WAYPOINT_REACH = 1.5;
 const WAYPOINT_LIMIT_R = 90;
 const MAX_TRAIL_LEN = 40; // u; beyond this an 'out' bot turns back
@@ -66,7 +64,7 @@ function ringFor(p: Player): Ring | null {
   return best;
 }
 
-function planTrip(p: Player, brain: BotBrain, rng: () => number) {
+function planTrip(world: World, p: Player, brain: BotBrain, rng: () => number) {
   const ring = ringFor(p);
   if (!ring) { brain.waypoints = []; brain.state = 'return'; return; }
   const b = ring[Math.floor(rng() * ring.length) % ring.length];
@@ -74,7 +72,7 @@ function planTrip(p: Player, brain: BotBrain, rng: () => number) {
   for (const v of ring) { cx += v.x; cy += v.y; }
   cx /= ring.length; cy /= ring.length;
   let dir = Math.atan2(b.y - cy, b.x - cx) + (rng() * 2 - 1) * OUTWARD_JITTER;
-  const span = WAYPOINT_MAX - WAYPOINT_MIN;
+  const span = DIFFICULTY[world.difficulty].waypointMax - WAYPOINT_MIN;
   const d1 = WAYPOINT_MIN + rng() * span;
   const w1 = clampR({ x: b.x + Math.cos(dir) * d1, y: b.y + Math.sin(dir) * d1 }, WAYPOINT_LIMIT_R);
   const side = rng() < 0.5 ? -1 : 1;
@@ -113,12 +111,13 @@ function trailSegs(t: Player): [Vec, Vec][] {
 }
 
 /** Nearest point of the human trail if it lies on one of the hunt rays. */
-function huntTarget(p: Player, human: Player): Vec | null {
+function huntTarget(world: World, p: Player, human: Player): Vec | null {
   if (!human.alive || human.trail.length === 0) return null;
   const segs = trailSegs(human);
   const h = p.heading;
+  const mul = DIFFICULTY[world.difficulty].huntRangeMul;
   const rays: [number, number][] = [
-    [h, HUNT_AHEAD_LEN], [h + HUNT_SIDE_ANGLE, HUNT_SIDE_LEN], [h - HUNT_SIDE_ANGLE, HUNT_SIDE_LEN],
+    [h, HUNT_AHEAD_LEN * mul], [h + HUNT_SIDE_ANGLE, HUNT_SIDE_LEN * mul], [h - HUNT_SIDE_ANGLE, HUNT_SIDE_LEN * mul],
   ];
   let hit = false;
   for (const [a, len] of rays) {
@@ -172,11 +171,12 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
   const human = world.players[world.humanId];
   const inside = landContains(p.land, p.pos);
   const tl = trailLen(p);
+  const cautionTrail = DIFFICULTY[world.difficulty].cautionTrail;
 
   if (brain.state === 'hunt') brain.state = 'return';
 
   // Caution: long trail with the human close by.
-  if (tl > CAUTION_TRAIL_LEN && human.alive && dist(human.pos, p.pos) < CAUTION_HUMAN_DIST) {
+  if (tl > cautionTrail && human.alive && dist(human.pos, p.pos) < CAUTION_HUMAN_DIST) {
     brain.state = 'return';
   }
   if (brain.state === 'out' && tl > MAX_TRAIL_LEN) brain.state = 'return';
@@ -184,7 +184,7 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
   if (p.burn) brain.state = 'return';
 
   // Hunt overrides, unless carrying a long trail or burning.
-  const prey = tl <= CAUTION_TRAIL_LEN && !p.burn ? huntTarget(p, human) : null;
+  const prey = tl <= cautionTrail && !p.burn ? huntTarget(world, p, human) : null;
   if (prey) {
     brain.state = 'hunt';
     return finish(p, steerTo(p, prey));
@@ -192,7 +192,7 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
 
   if (brain.state === 'return' && inside && p.trail.length === 0) brain.state = 'home';
   if (brain.state === 'home') {
-    if (inside || p.land.length === 0) planTrip(p, brain, rng);
+    if (inside || p.land.length === 0) planTrip(world, p, brain, rng);
     else brain.state = 'return';
   }
 

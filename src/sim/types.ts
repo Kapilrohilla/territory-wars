@@ -1,3 +1,4 @@
+import type { Difficulty } from './config';
 import type { MultiPoly, Vec } from './geometry';
 
 /** null keeps the current target. */
@@ -43,6 +44,7 @@ export type World = {
   over: boolean;
   won: boolean;
   seed: number;
+  difficulty: Difficulty;
   /** mulberry32 state; advanced by every world-owned random draw. */
   rngState: number;
 };

@@ -163,33 +163,48 @@ function drawEmber(ctx: CanvasRenderingContext2D, at: Vec, time: number, phase: 
   ctx.restore();
 }
 
-function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec, time: number): void {
+/** Path-length table for a trail polyline (trail + head); `at` positions run from trail[0]. */
+export type TrailPoly = { pts: Vec[]; cum: number[]; total: number };
+
+/**
+ * Adds p's trail (live tail to `head` included) to the current path, skipping the burnt
+ * range [back, front] when it is burning. Shared by the main renderer and the minimap.
+ * Returns the polyline table (for embers), or null for an empty trail.
+ */
+export function addTrailPath(ctx: CanvasRenderingContext2D, p: Player, head: Vec): TrailPoly | null {
   const t = p.trail;
-  if (t.length === 0) return;
-  ctx.beginPath();
+  if (t.length === 0) return null;
   const burn = p.burn;
-  let pts: Vec[] = [], cum: number[] = [], total = 0;
   if (!burn) {
     ctx.moveTo(t[0].x, t[0].y);
     for (let i = 1; i < t.length; i++) ctx.lineTo(t[i].x, t[i].y);
     ctx.lineTo(head.x, head.y); // live tail so the ribbon never lags the head
-  } else {
-    // Skip the burnt range [back, front]; path lengths run from trail[0] to the head.
-    pts = t.concat([head]);
-    cum = [0];
-    for (let i = 1; i < pts.length; i++) {
-      cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
-    }
-    total = cum[cum.length - 1];
-    addRange(ctx, pts, cum, 0, burn.back);
-    addRange(ctx, pts, cum, burn.front, total);
+    return null;
   }
+  // Path lengths run from trail[0] to the head.
+  const pts = t.concat([head]);
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
+  }
+  const total = cum[cum.length - 1];
+  addRange(ctx, pts, cum, 0, burn.back);
+  addRange(ctx, pts, cum, burn.front, total);
+  return { pts, cum, total };
+}
+
+function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec, time: number): void {
+  if (p.trail.length === 0) return;
+  ctx.beginPath();
+  const poly = addTrailPath(ctx, p, head);
   ctx.strokeStyle = colors(p).trail;
   ctx.lineWidth = TRAIL_WIDTH;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.stroke();
-  if (burn && pts.length > 1) {
+  const burn = p.burn;
+  if (burn && poly && poly.pts.length > 1) {
+    const { pts, cum, total } = poly;
     if (burn.back > 0) drawEmber(ctx, pointAt(pts, cum, burn.back), time, 0);
     drawEmber(ctx, pointAt(pts, cum, Math.min(burn.front, total)), time, 0.5);
   }

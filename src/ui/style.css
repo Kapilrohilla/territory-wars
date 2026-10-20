@@ -144,6 +144,46 @@ canvas#game {
 }
 .tw-swatch:focus-visible { outline: 2px solid var(--tw-ink); outline-offset: 1px; }
 
+.tw-segments {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.tw-segment {
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(52, 50, 63, 0.07);
+  box-shadow: 0 3px 0 rgba(52, 50, 63, 0.14);
+  color: var(--tw-ink-soft);
+  font: 800 16px var(--tw-font);
+  cursor: pointer;
+  transition: transform 90ms ease, filter 90ms ease;
+}
+.tw-segment:hover { filter: brightness(1.04); }
+.tw-segment:active { transform: translateY(2px); }
+.tw-segment[aria-checked="true"] {
+  background: var(--tw-accent);
+  box-shadow: 0 3px 0 var(--tw-accent-lip), inset 0 0 0 3px #fff;
+  color: var(--tw-ink);
+}
+.tw-segment:focus-visible { outline: 3px solid var(--tw-ink); outline-offset: 2px; }
+
+.tw-diff-tag {
+  display: inline-block;
+  margin: -6px 0 12px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: rgba(52, 50, 63, 0.08);
+  color: var(--tw-ink-soft);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .tw-btn {
   display: block;
   width: 100%;

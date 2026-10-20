@@ -1,4 +1,4 @@
-import { CONFIG } from './config';
+import { CONFIG, DIFFICULTY, type Difficulty } from './config';
 import {
   type MultiPoly, type Vec,
   angleDiff, circleRing, clampToCircle, distPointSeg, segIntersect,
@@ -112,10 +112,12 @@ function newPlayer(id: number, name: string, colorIndex: number, isHuman: boolea
   };
 }
 
-export function createWorld(opts: { seed: number; humanName: string; humanColor: number }): World {
+export function createWorld(opts: {
+  seed: number; humanName: string; humanColor: number; difficulty?: Difficulty;
+}): World {
   const world: World = {
     time: 0, players: [], humanId: 0, events: [], over: false, won: false,
-    seed: opts.seed, rngState: opts.seed >>> 0,
+    seed: opts.seed, difficulty: opts.difficulty ?? 'normal', rngState: opts.seed >>> 0,
   };
   const rng = worldRng(world);
   const humanColor = ((opts.humanColor % COLOR_COUNT) + COLOR_COUNT) % COLOR_COUNT;
@@ -129,7 +131,7 @@ export function createWorld(opts: { seed: number; humanName: string; humanColor:
 
   const colors: number[] = [];
   for (let c = 0; c < COLOR_COUNT; c++) if (c !== humanColor) colors.push(c);
-  for (let i = 1; i <= CONFIG.BOT_COUNT; i++) {
+  for (let i = 1; i <= DIFFICULTY[world.difficulty].botCount; i++) {
     const bot = newPlayer(i, '', colors[(i - 1) % colors.length], false);
     world.players.push(bot);
     bot.name = pickName(world, rng);
@@ -206,7 +208,7 @@ function moveInside(p: Player, d: number): void {
 /** Turn, move, clamp, extend trail, capture on re-entry. */
 function advance(world: World, p: Player, input: Input | undefined, pending: Map<number, number | null>) {
   if (input && input.targetHeading !== null) p.targetHeading = wrap(input.targetHeading);
-  const rate = p.isHuman ? CONFIG.TURN_HUMAN : CONFIG.TURN_BOT;
+  const rate = p.isHuman ? CONFIG.TURN_HUMAN : DIFFICULTY[world.difficulty].botTurnRate;
   const dtTurn = Math.min(CONFIG.DT, CONFIG.TURN_DT_CAP);
   p.heading = wrap(p.heading + angleDiff(p.targetHeading, p.heading) * dtTurn * rate);
 
@@ -261,8 +263,8 @@ function lengthAt(q: Vec, a: Vec, b: Vec, sa: number): number {
 }
 
 /** Spreads every burn by BURN_SPEED·DT both ways; a burn that reaches the head kills. */
-function advanceBurns(alive: Player[], pending: Map<number, number | null>) {
-  const d = CONFIG.BURN_SPEED * CONFIG.DT;
+function advanceBurns(world: World, alive: Player[], pending: Map<number, number | null>) {
+  const d = DIFFICULTY[world.difficulty].burnSpeed * CONFIG.DT;
   for (const p of alive) {
     const b = p.burn;
     if (!b) continue;
@@ -281,11 +283,13 @@ function trailHitAt(a: Player, b: Player): number | null {
   const t = b.trail;
   if (t.length === 0 || b.burn) return null;
   const p0 = a.prevPos, p1 = a.pos;
-  let s = 0;
   for (let i = 0; i < t.length; i++) {
     const end = i + 1 < t.length ? t[i + 1] : b.pos;
-    if (segIntersect(p0, p1, t[i], end)) return lengthAt(p1, t[i], end, s);
-    s += dist(t[i], end);
+    if (!segIntersect(p0, p1, t[i], end)) continue;
+    // Path length is only needed for an actual hit: sum the segments before it.
+    let s = 0;
+    for (let j = 0; j < i; j++) s += dist(t[j], t[j + 1]);
+    return lengthAt(p1, t[i], end, s);
   }
   return null;
 }
@@ -376,7 +380,7 @@ export function step(world: World, inputs: Map<number, Input>): void {
 
   const alive = world.players.filter((p) => p.alive);
   for (const p of alive) advance(world, p, inputs.get(p.id), pending);
-  advanceBurns(alive, pending);
+  advanceBurns(world, alive, pending);
   resolveCollisions(world, alive, pending);
   applyDeaths(world, pending);
   housekeeping(world);

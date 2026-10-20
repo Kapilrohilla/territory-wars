@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BEST_KEY, isBetter, loadBest, recordRun } from '../src/ui/best';
+import { BEST_KEY, bestKey, isBetter, loadBest, recordRun } from '../src/ui/best';
 import { minimapTransform } from '../src/game/minimap';
 
 function memStore(init: Record<string, string> = {}) {
@@ -23,18 +23,51 @@ describe('best score', () => {
 
   it('recordRun saves only new bests and loadBest reads them back', () => {
     const s = memStore();
-    expect(recordRun({ pct: 5, kills: 1, time: 30 }, s)).toBe(true);
-    expect(recordRun({ pct: 4, kills: 9, time: 90 }, s)).toBe(false);
-    expect(loadBest(s)).toEqual({ pct: 5, kills: 1, time: 30 });
+    expect(recordRun({ pct: 5, kills: 1, time: 30 }, 'normal', s)).toBe(true);
+    expect(recordRun({ pct: 4, kills: 9, time: 90 }, 'normal', s)).toBe(false);
+    expect(loadBest('normal', s)).toEqual({ pct: 5, kills: 1, time: 30 });
   });
 
   it('ignores corrupt or missing storage', () => {
-    expect(loadBest(memStore({ [BEST_KEY]: '{oops' }))).toBeNull();
-    expect(loadBest(memStore({ [BEST_KEY]: '{"pct":"x","kills":1,"time":1}' }))).toBeNull();
-    expect(loadBest(undefined)).toBeNull();
+    expect(loadBest('normal', memStore({ [bestKey('normal')]: '{oops' }))).toBeNull();
+    expect(loadBest('normal', memStore({ [bestKey('normal')]: '{"pct":"x","kills":1,"time":1}' }))).toBeNull();
+    expect(loadBest('normal', undefined)).toBeNull();
     const throwing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
-    expect(loadBest(throwing)).toBeNull();
-    expect(recordRun({ pct: 1, kills: 0, time: 1 }, throwing)).toBe(true);
+    expect(loadBest('normal', throwing)).toBeNull();
+    expect(recordRun({ pct: 1, kills: 0, time: 1 }, 'normal', throwing)).toBe(true);
+  });
+});
+
+describe('best score per difficulty', () => {
+  it('keeps bests separately per difficulty', () => {
+    const s = memStore();
+    expect(recordRun({ pct: 5, kills: 1, time: 30 }, 'easy', s)).toBe(true);
+    expect(recordRun({ pct: 2, kills: 0, time: 10 }, 'hard', s)).toBe(true);
+    expect(loadBest('easy', s)).toEqual({ pct: 5, kills: 1, time: 30 });
+    expect(loadBest('hard', s)).toEqual({ pct: 2, kills: 0, time: 10 });
+    expect(loadBest('normal', s)).toBeNull();
+    // a lower run on hard doesn't beat the easy best, nor vice versa
+    expect(recordRun({ pct: 1, kills: 0, time: 5 }, 'hard', s)).toBe(false);
+    expect(bestKey('hard')).toBe('territory-wars.best.hard');
+  });
+
+  it('migrates the legacy key into normal once', () => {
+    const legacy = JSON.stringify({ pct: 7, kills: 3, time: 50 });
+    const s = memStore({ [BEST_KEY]: legacy });
+    expect(loadBest('easy', s)).toBeNull();
+    expect(loadBest('normal', s)).toEqual({ pct: 7, kills: 3, time: 50 });
+    expect(s.m.has(bestKey('normal'))).toBe(true);
+    // a later (different) legacy value never overwrites the migrated one
+    s.setItem(BEST_KEY, JSON.stringify({ pct: 99, kills: 9, time: 9 }));
+    expect(loadBest('normal', s)).toEqual({ pct: 7, kills: 3, time: 50 });
+  });
+
+  it('does not migrate over an existing normal best', () => {
+    const s = memStore({
+      [BEST_KEY]: JSON.stringify({ pct: 7, kills: 3, time: 50 }),
+      [bestKey('normal')]: JSON.stringify({ pct: 1, kills: 0, time: 5 }),
+    });
+    expect(loadBest('normal', s)).toEqual({ pct: 1, kills: 0, time: 5 });
   });
 });
 

@@ -3,7 +3,7 @@ import { createWorld, step, pct, trailLength } from '../src/sim/world';
 import type { Input, Player, World } from '../src/sim/types';
 import { circleRing, type MultiPoly, type Vec } from '../src/sim/geometry';
 import { landArea } from '../src/sim/territory';
-import { CONFIG } from '../src/sim/config';
+import { CONFIG, DIFFICULTY } from '../src/sim/config';
 
 const v = (x: number, y: number): Vec => ({ x, y });
 const disk = (c: Vec, r: number, n = 24): MultiPoly => [[circleRing(c, r, n)]];
@@ -42,6 +42,27 @@ function placeBot(w: World, pos: Vec, heading: number, landAt: Vec = v(40, 40), 
 }
 
 const steer = (h: number) => new Map<number, Input>([[0, { targetHeading: h }]]);
+
+describe('difficulty', () => {
+  it('bot counts are 8 / 12 / 14', () => {
+    const counts = (['easy', 'normal', 'hard'] as const).map(
+      (d) => createWorld({ seed: 1, humanName: 'T', humanColor: 0, difficulty: d }).players.length - 1);
+    expect(counts).toEqual([8, 12, 14]);
+  });
+
+  it('defaults to normal and stores the difficulty', () => {
+    expect(createWorld({ seed: 1, humanName: 'T', humanColor: 0 }).difficulty).toBe('normal');
+    expect(createWorld({ seed: 1, humanName: 'T', humanColor: 0, difficulty: 'hard' }).difficulty).toBe('hard');
+  });
+
+  it('burn speed and bot turn rate follow the difficulty table', () => {
+    expect(DIFFICULTY.normal.burnSpeed).toBe(CONFIG.BURN_SPEED);
+    expect(DIFFICULTY.normal.botTurnRate).toBe(CONFIG.TURN_BOT);
+    expect(DIFFICULTY.normal.botCount).toBe(CONFIG.BOT_COUNT);
+    expect(DIFFICULTY.easy.burnSpeed).toBe(30);
+    expect(DIFFICULTY.hard.burnSpeed).toBe(55);
+  });
+});
 
 describe('world', () => {
   it('human moves at 10 u/s', () => {

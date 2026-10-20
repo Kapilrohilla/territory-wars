@@ -1,5 +1,6 @@
 import { PALETTE } from '../game/palette';
 import { pct } from '../sim/world';
+import { DIFFICULTIES, type Difficulty } from '../sim/config';
 import type { World } from '../sim/types';
 import type { BestScore } from './best';
 
@@ -78,12 +79,20 @@ export function cleanName(raw: string): string {
 
 // ---------- DOM ----------
 
-export type StartPrefs = { name: string; color: number };
-export type OverStats = { won: boolean; pct: number; kills: number; time: number; newBest: boolean };
+export type StartPrefs = { name: string; color: number; difficulty: Difficulty };
+export type OverStats = {
+  won: boolean; pct: number; kills: number; time: number; newBest: boolean; difficulty: Difficulty;
+};
+
+const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
 
 export type Screens = {
-  /** Home screen: best score, name, colour and Play. */
-  showStart(prefs: StartPrefs, best: BestScore | null, onPlay: (prefs: StartPrefs) => void): void;
+  /** Home screen: best score (for the selected difficulty), name, colour, difficulty and Play. */
+  showStart(
+    prefs: StartPrefs,
+    bestFor: (difficulty: Difficulty) => BestScore | null,
+    onPlay: (prefs: StartPrefs) => void,
+  ): void;
   /** Overview canvas in the HUD's bottom-right corner. */
   minimap: HTMLCanvasElement;
   showHud(): void;
@@ -150,10 +159,56 @@ export function createScreens(root: HTMLElement): Screens {
   const hint = el('p', 'tw-hint',
     'Drag anywhere (or use arrow keys / WASD) to steer. Leave your land and loop back to claim the area. ' +
     'Cross a rival’s trail to knock them out — but guard your own.');
-  startCard.append(playBtn, nameLabel, nameInput, colorLabel, swatches, hint);
+  const diffLabel = el('div', 'tw-label', 'Difficulty');
+  const diffGroup = el('div', 'tw-segments');
+  diffGroup.setAttribute('role', 'radiogroup');
+  diffGroup.setAttribute('aria-label', 'Difficulty');
+  const diffBtns = DIFFICULTIES.map((d) => {
+    const b = el('button', 'tw-segment', DIFFICULTY_LABEL[d]);
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    diffGroup.append(b);
+    return b;
+  });
+  startCard.append(playBtn, nameLabel, nameInput, colorLabel, swatches, diffLabel, diffGroup, hint);
   start.append(startCard);
 
   let chosen = 0;
+  let chosenDiff: Difficulty = 'normal';
+  let bestForCb: (d: Difficulty) => BestScore | null = () => null;
+  const showBest = (best: BestScore | null) => {
+    if (best) {
+      setText(bestPct, formatPct(best.pct, 2));
+      setText(bestMeta, `${best.kills} ${best.kills === 1 ? 'kill' : 'kills'} · ${formatTime(best.time)} survived`);
+      bestBox.classList.remove('tw-best-empty');
+    } else {
+      setText(bestPct, '—');
+      setText(bestMeta, 'No best yet. Go claim some land!');
+      bestBox.classList.add('tw-best-empty');
+    }
+  };
+  const pickDiff = (d: Difficulty) => {
+    chosenDiff = d;
+    diffBtns.forEach((b, j) => {
+      const on = DIFFICULTIES[j] === d;
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1;
+    });
+    setText(bestLabel, `Best score · ${DIFFICULTY_LABEL[d]}`);
+    showBest(bestForCb(d));
+  };
+  diffBtns.forEach((b, i) => b.addEventListener('click', () => pickDiff(DIFFICULTIES[i])));
+  diffGroup.addEventListener('keydown', (e) => {
+    const n = diffBtns.length;
+    let d = 0;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') d = 1;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') d = -1;
+    if (!d) return;
+    e.preventDefault();
+    const i = (DIFFICULTIES.indexOf(chosenDiff) + d + n) % n;
+    pickDiff(DIFFICULTIES[i]);
+    diffBtns[i].focus();
+  });
   let onPlayCb: ((p: StartPrefs) => void) | null = null;
   const pick = (i: number) => {
     chosen = i;
@@ -181,7 +236,7 @@ export function createScreens(root: HTMLElement): Screens {
     if (!onPlayCb) return;
     const cb = onPlayCb;
     onPlayCb = null; // one click = one game
-    cb({ name: cleanName(nameInput.value), color: chosen });
+    cb({ name: cleanName(nameInput.value), color: chosen, difficulty: chosenDiff });
   };
   playBtn.addEventListener('click', submit);
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
@@ -216,6 +271,7 @@ export function createScreens(root: HTMLElement): Screens {
   const over = el('div', 'tw-screen tw-over');
   const overCard = el('div', 'tw-card');
   const overTitle = el('h2', 'tw-over-title');
+  const overDiff = el('div', 'tw-diff-tag');
   const newBestEl = el('div', 'tw-new-best', 'New best!');
   const overStats = el('div', 'tw-over-stats');
   const stat = (label: string) => {
@@ -232,7 +288,7 @@ export function createScreens(root: HTMLElement): Screens {
   againBtn.type = 'button';
   const homeBtn = el('button', 'tw-btn tw-home', 'Home');
   homeBtn.type = 'button';
-  overCard.append(overTitle, newBestEl, overStats, againBtn, homeBtn);
+  overCard.append(overTitle, overDiff, newBestEl, overStats, againBtn, homeBtn);
   over.append(overCard);
   let onAgainCb: (() => void) | null = null;
   let onHomeCb: (() => void) | null = null;
@@ -251,16 +307,9 @@ export function createScreens(root: HTMLElement): Screens {
 
   return {
     minimap,
-    showStart(prefs, best, onPlay) {
-      if (best) {
-        setText(bestPct, formatPct(best.pct, 2));
-        setText(bestMeta, `${best.kills} ${best.kills === 1 ? 'kill' : 'kills'} · ${formatTime(best.time)} survived`);
-        bestBox.classList.remove('tw-best-empty');
-      } else {
-        setText(bestPct, '—');
-        setText(bestMeta, 'No best yet. Go claim some land!');
-        bestBox.classList.add('tw-best-empty');
-      }
+    showStart(prefs, bestFor, onPlay) {
+      bestForCb = bestFor;
+      pickDiff(prefs.difficulty);
       nameInput.value = prefs.name;
       pick(((prefs.color % swatchBtns.length) + swatchBtns.length) % swatchBtns.length);
       onPlayCb = onPlay;
@@ -304,6 +353,8 @@ export function createScreens(root: HTMLElement): Screens {
     showOver(s, onAgain, onHome) {
       newBestEl.hidden = !s.newBest;
       setText(overTitle, s.won ? 'You won!' : 'Game over');
+      setText(overDiff, DIFFICULTY_LABEL[s.difficulty]);
+      overDiff.dataset.difficulty = s.difficulty;
       over.classList.toggle('tw-won', s.won);
       setText(overPct, formatPct(s.pct, 2));
       setText(overKills, String(s.kills));

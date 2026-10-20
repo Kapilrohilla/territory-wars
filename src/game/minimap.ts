@@ -2,7 +2,7 @@ import { CONFIG } from '../sim/config';
 import type { World } from '../sim/types';
 import type { Camera } from './camera';
 import { PALETTE } from './palette';
-import { interpPos, landPath, playerColors } from './render';
+import { addTrailPath, interpPos, landPath, playerColors } from './render';
 
 /** Gap between the arena edge and the minimap edge, in CSS px. */
 const PAD_PX = 4;
@@ -60,9 +60,7 @@ export function drawMinimap(
     if (!p.alive || p.trail.length === 0) continue;
     const head = interpPos(p, alpha);
     ctx.beginPath();
-    ctx.moveTo(p.trail[0].x, p.trail[0].y);
-    for (let i = 1; i < p.trail.length; i++) ctx.lineTo(p.trail[i].x, p.trail[i].y);
-    ctx.lineTo(head.x, head.y);
+    addTrailPath(ctx, p, head); // skips a burning trail's burnt range
     ctx.strokeStyle = playerColors(p.colorIndex).lip;
     ctx.stroke();
   }
