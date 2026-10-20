@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { centroid, createEffects, formatGain } from '../src/game/effects';
+import { centroid, createEffects, formatGain, sparkVelocities } from '../src/game/effects';
 import { createWorld } from '../src/sim/world';
 import { circleRing, type MultiPoly } from '../src/sim/geometry';
 import { CONFIG } from '../src/sim/config';
@@ -80,5 +80,63 @@ describe('createEffects', () => {
     const fx = createEffects();
     fx.onEvents([{ type: 'down', playerId: 0, killerId: 1, cause: 'trail' }], world, { nudge: () => {} });
     expect(fx.busy()).toBe(false);
+  });
+});
+
+describe('cut sparks', () => {
+  const burning = (world: ReturnType<typeof createWorld>, victim = 1) => {
+    const v = world.players[victim];
+    v.trail = [{ x: 0, y: 0 }, { x: 4, y: 0 }];
+    v.pos = { x: 4, y: 2 };
+    v.burn = { s0: 2, back: 2, front: 2, killerId: world.humanId, killerDeaths: 0 };
+    return v;
+  };
+
+  it('a burn the human starts sparks once, keeps busy() while the burst plays, then settles', () => {
+    const world = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+    const fx = createEffects();
+    fx.observe(world);
+    expect(fx.busy()).toBe(false);
+    burning(world);
+    fx.observe(world);
+    expect(fx.busy()).toBe(true);
+    fx.update(1);
+    expect(fx.busy()).toBe(false);
+    fx.observe(world); // same burn: no second burst
+    expect(fx.busy()).toBe(false);
+  });
+
+  it('the cut event sparks, and observe() does not repeat it', () => {
+    const world = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+    const fx = createEffects();
+    burning(world);
+    const cut = { type: 'cut', hitterId: world.humanId, victimId: 1 } as unknown as Parameters<typeof fx.onEvents>[0][number];
+    fx.onEvents([cut], world, { nudge: vi.fn() });
+    expect(fx.busy()).toBe(true);
+    fx.update(1);
+    fx.observe(world);
+    expect(fx.busy()).toBe(false);
+  });
+
+  it('a bot burning another bot does not spark', () => {
+    const world = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+    const fx = createEffects();
+    burning(world).burn!.killerId = 2;
+    fx.observe(world);
+    expect(fx.busy()).toBe(false);
+  });
+});
+
+describe('sparkVelocities', () => {
+  it('spreads n sparks around the circle within the speed range', () => {
+    const out = Array.from({ length: 8 }, () => ({ vx: 0, vy: 0 }));
+    sparkVelocities(8, 10, () => 0.5, out);
+    for (const v of out) {
+      const sp = Math.hypot(v.vx, v.vy);
+      expect(sp).toBeGreaterThanOrEqual(5.5 - 1e-9);
+      expect(sp).toBeLessThanOrEqual(10 + 1e-9);
+    }
+    const sx = out.reduce((a, v) => a + v.vx, 0), sy = out.reduce((a, v) => a + v.vy, 0);
+    expect(Math.hypot(sx, sy)).toBeLessThan(1e-6); // evenly spread: no net push
   });
 });
