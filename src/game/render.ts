@@ -1,0 +1,209 @@
+import { CONFIG } from '../sim/config';
+import { angleDiff, type MultiPoly, type Vec } from '../sim/geometry';
+import type { Player, World } from '../sim/types';
+import type { Camera } from './camera';
+import { PALETTE } from './palette';
+
+const LIP_OFFSET = 0.35;
+const TRAIL_WIDTH = 0.6;
+const HEAD_SIZE = 1.2;
+const HEAD_RADIUS = 0.3;
+const HEAD_SIDE = 0.22;
+const GRID_STEP = 5;
+const DYING_ALPHA = 0.4;
+const NAME_OFFSET = 1.5;
+
+/** Render-side state that spans frames (Task 6 extends this with effects). */
+export type Fx = {
+  /** Each player's heading before the latest step, for interpolation. */
+  prevHeading: Map<number, number>;
+};
+
+export function createFx(): Fx {
+  return { prevHeading: new Map() };
+}
+
+/** Call right before each sim step. */
+export function snapshotFx(fx: Fx, world: World): void {
+  for (const p of world.players) fx.prevHeading.set(p.id, p.heading);
+}
+
+export function interpPos(p: Player, alpha: number): Vec {
+  return {
+    x: p.prevPos.x + (p.pos.x - p.prevPos.x) * alpha,
+    y: p.prevPos.y + (p.pos.y - p.prevPos.y) * alpha,
+  };
+}
+
+function interpHeading(fx: Fx, p: Player, alpha: number): number {
+  const prev = fx.prevHeading.get(p.id);
+  if (prev === undefined) return p.heading;
+  return prev + angleDiff(p.heading, prev) * alpha;
+}
+
+// Sim replaces land arrays on change, so array identity is the cache key.
+const pathCache = new WeakMap<MultiPoly, Path2D>();
+
+function landPath(m: MultiPoly): Path2D {
+  let path = pathCache.get(m);
+  if (path) return path;
+  path = new Path2D();
+  for (const poly of m) {
+    for (const ring of poly) {
+      if (ring.length < 3) continue;
+      path.moveTo(ring[0].x, ring[0].y);
+      for (let i = 1; i < ring.length; i++) path.lineTo(ring[i].x, ring[i].y);
+      path.closePath();
+    }
+  }
+  pathCache.set(m, path);
+  return path;
+}
+
+function colors(p: Player) {
+  const n = PALETTE.players.length;
+  return PALETTE.players[((p.colorIndex % n) + n) % n];
+}
+
+function drawArena(ctx: CanvasRenderingContext2D, cam: Camera, s: number): void {
+  const R = CONFIG.ARENA_R;
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.fillStyle = PALETTE.arena;
+  ctx.fill();
+
+  ctx.save();
+  ctx.clip();
+  const hw = cam.viewW / (2 * s), hh = cam.halfHeight;
+  const x0 = Math.max(-R, Math.floor((cam.x - hw) / GRID_STEP) * GRID_STEP);
+  const x1 = Math.min(R, cam.x + hw);
+  const y0 = Math.max(-R, Math.floor((cam.y - hh) / GRID_STEP) * GRID_STEP);
+  const y1 = Math.min(R, cam.y + hh);
+  ctx.beginPath();
+  for (let x = x0; x <= x1; x += GRID_STEP) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+  for (let y = y0; y <= y1; y += GRID_STEP) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+  ctx.strokeStyle = PALETTE.grid;
+  ctx.lineWidth = 1 / s;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.arc(0, 0, R, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(60, 60, 80, 0.18)';
+  ctx.lineWidth = 2 / s;
+  ctx.stroke();
+}
+
+function drawLands(ctx: CanvasRenderingContext2D, world: World): void {
+  const items: { m: MultiPoly; p: Player; alpha: number }[] = [];
+  for (const p of world.players) {
+    if (p.dyingLand && p.dyingLand.length) items.push({ m: p.dyingLand, p, alpha: DYING_ALPHA });
+    if (p.land.length) items.push({ m: p.land, p, alpha: 1 });
+  }
+  // All lips first, then all tops: a neighbour's top occludes the lip below it.
+  ctx.save();
+  ctx.translate(0, LIP_OFFSET);
+  for (const it of items) {
+    ctx.globalAlpha = it.alpha;
+    ctx.fillStyle = colors(it.p).lip;
+    ctx.fill(landPath(it.m), 'evenodd');
+  }
+  ctx.restore();
+  for (const it of items) {
+    ctx.globalAlpha = it.alpha;
+    ctx.fillStyle = colors(it.p).base;
+    ctx.fill(landPath(it.m), 'evenodd');
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec): void {
+  const t = p.trail;
+  if (t.length === 0) return;
+  ctx.beginPath();
+  ctx.moveTo(t[0].x, t[0].y);
+  for (let i = 1; i < t.length; i++) ctx.lineTo(t[i].x, t[i].y);
+  ctx.lineTo(head.x, head.y); // live tail so the ribbon never lags the head
+  ctx.strokeStyle = colors(p).trail;
+  ctx.lineWidth = TRAIL_WIDTH;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+}
+
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: number): void {
+  const c = colors(p);
+  const h = HEAD_SIZE / 2;
+  // Side face: same square shifted down, darkened.
+  ctx.save();
+  ctx.translate(head.x, head.y + HEAD_SIDE);
+  ctx.rotate(heading);
+  roundRect(ctx, -h, -h, HEAD_SIZE, HEAD_SIZE, HEAD_RADIUS);
+  ctx.fillStyle = c.lip;
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.22)';
+  ctx.fill();
+  ctx.restore();
+  // Top face.
+  ctx.save();
+  ctx.translate(head.x, head.y);
+  ctx.rotate(heading);
+  roundRect(ctx, -h, -h, HEAD_SIZE, HEAD_SIZE, HEAD_RADIUS);
+  ctx.fillStyle = c.lip;
+  ctx.fill();
+  ctx.restore();
+}
+
+/**
+ * Draws the world. Expects ctx's transform to map CSS pixels (DPR applied by
+ * the caller) and `cam` to be updated for this frame.
+ */
+export function render(
+  ctx: CanvasRenderingContext2D,
+  world: World,
+  cam: Camera,
+  alpha: number,
+  fx: Fx,
+): void {
+  ctx.fillStyle = PALETTE.bg;
+  ctx.fillRect(0, 0, cam.viewW, cam.viewH);
+
+  const s = cam.scale();
+  ctx.save();
+  ctx.translate(cam.viewW / 2, cam.viewH / 2);
+  ctx.scale(s, s);
+  ctx.translate(-cam.x, -cam.y);
+
+  drawArena(ctx, cam, s);
+  drawLands(ctx, world);
+
+  const alive = world.players.filter((p) => p.alive);
+  const heads = new Map<number, Vec>();
+  for (const p of alive) heads.set(p.id, interpPos(p, alpha));
+  for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!);
+  // Human last so it stays on top.
+  const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
+  for (const p of order) drawHead(ctx, p, heads.get(p.id)!, interpHeading(fx, p, alpha));
+  ctx.restore();
+
+  // Names in screen space so text size is independent of zoom.
+  ctx.font = '600 12px system-ui, -apple-system, "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = 'rgba(40, 40, 55, 0.6)';
+  for (const p of order) {
+    const h = heads.get(p.id)!;
+    const sp = cam.worldToScreen({ x: h.x, y: h.y - NAME_OFFSET });
+    ctx.fillText(p.name, sp.x, sp.y);
+  }
+}

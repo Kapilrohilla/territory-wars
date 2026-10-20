@@ -1,0 +1,53 @@
+const MAX_ACCUM = 0.25;
+
+export type Loop = { tick(nowMs: number): void; start(): void; stop(): void };
+
+/**
+ * Fixed-timestep loop. `tick` does the accumulator work and is driven by
+ * requestAnimationFrame after `start()`; tests drive it with a fake clock.
+ * The first tick only records the time.
+ */
+export function createLoop(
+  stepFn: () => void,
+  renderFn: (alpha: number) => void,
+  dt: number,
+): Loop {
+  let last: number | null = null;
+  let acc = 0;
+  let raf: number | null = null;
+  let running = false;
+
+  function tick(nowMs: number): void {
+    if (last === null) { last = nowMs; return; }
+    const frame = Math.max(0, (nowMs - last) / 1000);
+    last = nowMs;
+    acc = Math.min(acc + frame, MAX_ACCUM);
+    while (acc >= dt) {
+      stepFn();
+      acc -= dt;
+    }
+    renderFn(Math.min(Math.max(acc / dt, 0), 1 - 1e-9));
+  }
+
+  function frame(now: number): void {
+    if (!running) return;
+    tick(now);
+    if (running) raf = requestAnimationFrame(frame);
+  }
+
+  return {
+    tick,
+    start() {
+      if (running) return;
+      running = true;
+      last = null;
+      acc = 0;
+      raf = requestAnimationFrame(frame);
+    },
+    stop() {
+      running = false;
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = null;
+    },
+  };
+}
