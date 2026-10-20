@@ -33,10 +33,26 @@ function savePrefs(p: StartPrefs): void {
 // the previous one stays painted behind the start screen until replaced.
 let session: Session | null = null;
 let hudTimer: ReturnType<typeof setInterval> | null = null;
+let hudFrame: number | null = null;
 
 function stopHud(): void {
   if (hudTimer !== null) clearInterval(hudTimer);
   hudTimer = null;
+  if (hudFrame !== null) cancelAnimationFrame(hudFrame);
+  hudFrame = null;
+}
+
+/** Runs the % count-up per animation frame, only while it is animating. */
+function animateHud(): void {
+  if (hudFrame !== null) return;
+  const frame = (now: number) => {
+    hudFrame = ui.tickHud(now) ? requestAnimationFrame(frame) : null;
+  };
+  hudFrame = requestAnimationFrame(frame);
+}
+
+function refreshHud(world: Session['world']): void {
+  if (ui.updateHud(world, performance.now())) animateHud();
 }
 
 function toStart(): void {
@@ -61,9 +77,9 @@ function play(prefs: StartPrefs): void {
   });
   session = s;
   ui.showHud();
-  ui.updateHud(s.world);
+  refreshHud(s.world);
   // Frozen once over, so the death-shrink tail doesn't read as 0%.
-  hudTimer = setInterval(() => { if (!s.world.over) ui.updateHud(s.world); }, HUD_INTERVAL_MS);
+  hudTimer = setInterval(() => { if (!s.world.over) refreshHud(s.world); }, HUD_INTERVAL_MS);
   s.start();
 }
 

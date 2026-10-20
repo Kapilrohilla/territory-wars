@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildLeaderboard, cleanName, formatPct, formatTime, type BoardEntry } from '../src/ui/screens';
+import {
+  buildLeaderboard, cleanName, createPctTween, formatPct, formatTime, type BoardEntry,
+} from '../src/ui/screens';
 
 const e = (id: number, pct: number, isHuman = false): BoardEntry => ({ id, name: `P${id}`, colorIndex: id, pct, isHuman });
 
@@ -46,5 +48,41 @@ describe('formatting', () => {
     expect(cleanName('   ')).toBe('You');
     expect(cleanName('  a   b ')).toBe('a b');
     expect(cleanName('abcdefghijklmnopq')).toBe('abcdefghijklmn');
+  });
+});
+
+describe('pct tween', () => {
+  it('counts up towards a new value with ease-out over ~300 ms', () => {
+    const t = createPctTween(300);
+    t.snap(1);
+    expect(t.value(0)).toBe(1);
+    t.set(5, 1000);
+    expect(t.active(1000)).toBe(true);
+    expect(t.value(1000)).toBeCloseTo(1, 9);
+    const mid = t.value(1150);
+    expect(mid).toBeGreaterThan(3); // ease-out: past the halfway value at half time
+    expect(mid).toBeLessThan(5);
+    expect(t.value(1100)).toBeLessThan(mid); // monotonic
+    expect(t.value(1300)).toBe(5);
+    expect(t.active(1300)).toBe(false);
+    expect(t.value(5000)).toBe(5);
+  });
+
+  it('retargets smoothly from the current displayed value', () => {
+    const t = createPctTween(300);
+    t.snap(0);
+    t.set(10, 0);
+    const shown = t.value(100);
+    t.set(20, 100);
+    expect(t.value(100)).toBeCloseTo(shown, 9);
+    expect(t.value(400)).toBe(20);
+  });
+
+  it('setting the same target does not restart the tween', () => {
+    const t = createPctTween(300);
+    t.snap(0);
+    t.set(10, 0);
+    t.set(10, 250);
+    expect(t.value(300)).toBe(10);
   });
 });

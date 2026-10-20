@@ -35,6 +35,38 @@ export function formatTime(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+export type PctTween = {
+  /** Jump straight to v (no animation). */
+  snap(v: number): void;
+  /** Animate from the currently shown value to `target`, starting at `now` (ms). */
+  set(target: number, now: number): void;
+  value(now: number): number;
+  active(now: number): boolean;
+};
+
+const easeOutCubic = (t: number) => 1 - (1 - t) ** 3;
+
+/** Displayed-number tween: counts towards each new target over `durationMs`, easing out. */
+export function createPctTween(durationMs = 300): PctTween {
+  let from = 0, to = 0, start = -Infinity;
+  const progress = (now: number) => Math.min(1, Math.max(0, (now - start) / durationMs));
+  const value = (now: number) => {
+    const k = progress(now);
+    return k >= 1 ? to : from + (to - from) * easeOutCubic(k);
+  };
+  return {
+    snap(v) { from = to = v; start = -Infinity; },
+    set(target, now) {
+      if (target === to) return;
+      from = value(now);
+      to = target;
+      start = now;
+    },
+    value,
+    active: (now) => progress(now) < 1,
+  };
+}
+
 export const NAME_MAX = 14;
 export const DEFAULT_NAME = 'You';
 
@@ -51,7 +83,10 @@ export type OverStats = { won: boolean; pct: number; kills: number; time: number
 export type Screens = {
   showStart(prefs: StartPrefs, onPlay: (prefs: StartPrefs) => void): void;
   showHud(): void;
-  updateHud(world: World): void;
+  /** Refreshes the HUD; returns true while the % counter is animating (call tickHud per frame). */
+  updateHud(world: World, now: number): boolean;
+  /** Advances the % counter animation; returns true while it is still animating. */
+  tickHud(now: number): boolean;
   showOver(stats: OverStats, onAgain: () => void): void;
 };
 
@@ -149,6 +184,7 @@ export function createScreens(root: HTMLElement): Screens {
   stats.append(pctEl, killsEl);
   const board = el('ol', 'tw-board');
   board.setAttribute('aria-label', 'Leaderboard');
+  const pctTween = createPctTween(300);
   const rowEls: RowEls[] = [];
   for (let i = 0; i < 6; i++) {
     const r = el('li', 'tw-row');
@@ -204,13 +240,19 @@ export function createScreens(root: HTMLElement): Screens {
     },
     showHud() {
       for (const r of rowEls) { r.root.hidden = true; r.key = ''; }
+      pctTween.snap(0);
       setText(pctEl, '0.00%');
       setText(killsEl, 'Kills 0');
       only(hud);
     },
-    updateHud(world) {
+    tickHud(now) {
+      setText(pctEl, formatPct(pctTween.value(now), 2));
+      return pctTween.active(now);
+    },
+    updateHud(world, now) {
       const human = world.players[world.humanId];
-      setText(pctEl, formatPct(pct(world, human.id), 2));
+      pctTween.set(pct(world, human.id), now);
+      setText(pctEl, formatPct(pctTween.value(now), 2));
       setText(killsEl, `Kills ${human.kills}`);
       const rows = buildLeaderboard(boardEntries(world));
       rowEls.forEach((r, i) => {
@@ -228,6 +270,7 @@ export function createScreens(root: HTMLElement): Screens {
           r.root.classList.toggle('tw-leader', row.leader);
         }
       });
+      return pctTween.active(now);
     },
     showOver(s, onAgain) {
       setText(overTitle, s.won ? 'You won!' : 'Game over');
