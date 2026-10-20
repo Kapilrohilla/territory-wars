@@ -162,6 +162,33 @@ describe('world', () => {
     expect(ev && ev.type === 'capture' && ev.gainedPct).toBeGreaterThan(0);
   });
 
+  it('enemy on capturer old land survives a capture elsewhere; enemy in new region dies', () => {
+    const w = soloWorld();
+    const h = w.players[0];
+    // Long strip of existing land reaching far west; the capture happens at its east end.
+    h.land = [[[v(-40, -3), v(3, -3), v(3, 3), v(-40, 3)]]];
+    h.trail = [v(2.5, 0), v(8, 0), v(8, 8), v(0, 8), v(0, 3.2)];
+    h.pos = v(0, 3.2);
+    h.prevPos = v(0, 3.4);
+    h.heading = -Math.PI / 2;
+    h.targetHeading = -Math.PI / 2;
+    const onOld = placeBot(w, v(-30, 0), 0); // crossing the capturer's old land, far away
+    const inNew = w.players[2];
+    Object.assign(inNew, {
+      alive: true, pos: v(5, 5), prevPos: v(5, 5), heading: 0, targetHeading: 0,
+      land: disk(v(-40, 40), 3), trail: [], respawnAt: null, deathTime: null, dyingLand: null,
+    });
+    let cap = false;
+    for (let i = 0; i < 5 && !cap; i++) {
+      step(w, NO_INPUT);
+      cap = w.events.some((e) => e.type === 'capture');
+    }
+    expect(cap).toBe(true);
+    expect(onOld.alive).toBe(true);
+    expect(inNew.alive).toBe(false);
+    expect(w.events).toContainEqual({ type: 'death', playerId: 2, killerId: 0 });
+  });
+
   it('capture subtracts land from enemies', () => {
     const w = soloWorld();
     const h = w.players[0];

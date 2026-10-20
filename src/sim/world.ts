@@ -163,14 +163,15 @@ function capture(world: World, p: Player, pending: Map<number, number | null>) {
   p.land = newLand;
   p.trail = [];
   const box = bbox(newLand);
+  // Only the newly gained region is lethal; enemies crossing old land are unaffected.
+  const region = subtractLand(newLand, oldLand);
   for (const q of world.players) {
     if (q === p || !q.alive) continue;
-    if (landContains(newLand, q.pos)) markDead(pending, q.id, p.id);
+    if (landContains(region, q.pos)) markDead(pending, q.id, p.id);
     if (q.land.length === 0 || !boxesOverlap(box, bbox(q.land))) continue;
     q.land = keepPiece(subtractLand(q.land, newLand), q.pos);
     if (q.land.length === 0) markDead(pending, q.id, p.id);
   }
-  const region = subtractLand(newLand, oldLand);
   world.events.push({ type: 'capture', playerId: p.id, gainedPct: pct(world, p.id) - before, region });
 }
 
