@@ -1,13 +1,13 @@
 {
-  "name": "paperio-clone",
+  "name": "territory-wars",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Territory Wars: an original browser territory-capture game.",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --dir tests",
+    "bench": "vitest run --dir bench --silent=false",
     "dev": "vite",
     "build": "tsc --noEmit && vite build"
   },

@@ -61,7 +61,7 @@ describe('bots', () => {
         if (w.over) break;
       }
       expect(12 - selfKilled.size).toBeGreaterThanOrEqual(8);
-    });
+    }, 30_000); // 60 s of simulated play with 13 players: well past Vitest's 5 s default on slow machines
   }
 
   it('bot hunts nearby human trail', () => {
