@@ -80,9 +80,23 @@ export function countdownFraction(remainingMs: number, totalMs: number): number 
   return Math.min(1, Math.max(0, remainingMs / totalMs));
 }
 
-/** Revive-modal subtitle, split so the rival's name can be bold: pre + <b>name</b> + post. */
+/** Countdown left when it pauses (the tab is hidden) at `now`, never below 0. */
+export function pausedRemaining(deadline: number, now: number): number {
+  return Math.max(0, deadline - now);
+}
+
+/**
+ * Revive-modal subtitle, split so the rival's name can be bold: pre + <b>name</b> + post.
+ * A null killer means nobody is credited (e.g. the rival who lit the burn has since died).
+ */
 export function reviveSubtitle(cause: DeathCause, killerName: string | null): { pre: string; name: string; post: string } {
-  if (killerName === null || cause === 'self') return { pre: 'You crossed your own trail', name: '', post: '' };
+  const plain = (pre: string) => ({ pre, name: '', post: '' });
+  if (cause === 'self') return plain('You crossed your own trail');
+  if (killerName === null) {
+    if (cause === 'trail') return plain('Your trail burned out');
+    if (cause === 'captured') return plain('Your land was taken');
+    return plain('You were knocked out');
+  }
   return { pre: 'Rival ', name: killerName, post: cause === 'trail' ? ' crossed your trail' : ' crashed into you' };
 }
 
@@ -111,6 +125,8 @@ export type ReviveInfo = {
   cause: DeathCause;
   /** Best score for the current difficulty (before this run). */
   best: BestScore | null;
+  /** The difficulty being played; labels the Best tile. */
+  difficulty: Difficulty;
   kills: number;
   time: number;
 };
@@ -374,13 +390,14 @@ export function createScreens(root: HTMLElement): Screens {
   const rstat = (label: string) => {
     const box = el('div', 'tw-revive-stat');
     const v = el('div', 'tw-revive-stat-value');
-    box.append(el('div', 'tw-revive-stat-label', label), v);
+    const l = el('div', 'tw-revive-stat-label', label);
+    box.append(l, v);
     reviveStats.append(box);
-    return v;
+    return { label: l, value: v };
   };
   const rBest = rstat('Best');
-  const rKills = rstat('Kills');
-  const rTime = rstat('Time');
+  const rKills = rstat('Kills').value;
+  const rTime = rstat('Time').value;
   const reviveBtn = el('button', 'tw-btn tw-revive-btn');
   reviveBtn.type = 'button';
   const reviveIcon = svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true', class: 'tw-revive-icon' });
@@ -411,6 +428,7 @@ export function createScreens(root: HTMLElement): Screens {
     offer = null;
     revive.hidden = true;
     document.removeEventListener('keydown', onReviveKey);
+    document.removeEventListener('visibilitychange', onReviveVisibility);
   };
   const giveUp = () => {
     if (!offer) return;
@@ -430,8 +448,21 @@ export function createScreens(root: HTMLElement): Screens {
     if (!offer) return;
     offer.deadline = performance.now() + offer.remaining;
     stopCountdown();
+    // A hidden tab keeps the clock paused; onReviveVisibility starts it when shown again.
+    if (document.hidden) return;
     reviveFrame = requestAnimationFrame(tickCountdown);
   };
+  /** A hidden tab must not burn the countdown: pause with what is left, resume on return. */
+  function onReviveVisibility() {
+    if (!offer || offer.pending) return; // a pending revive has the clock stopped already
+    if (document.hidden) {
+      if (reviveFrame === null) return;
+      offer.remaining = pausedRemaining(offer.deadline, performance.now());
+      stopCountdown();
+    } else if (reviveFrame === null) {
+      runCountdown();
+    }
+  }
   const setPending = (on: boolean) => {
     reviveBtn.disabled = on;
     reviveCard.classList.toggle('tw-pending', on);
@@ -537,7 +568,8 @@ export function createScreens(root: HTMLElement): Screens {
       const sub = reviveSubtitle(info.cause, info.killerName);
       reviveSub.replaceChildren(document.createTextNode(sub.pre));
       if (sub.name) reviveSub.append(el('b', undefined, sub.name), document.createTextNode(sub.post));
-      setText(rBest, info.best ? formatPct(info.best.pct, 1) : '—');
+      setText(rBest.label, `Best · ${DIFFICULTY_LABEL[info.difficulty]}`);
+      setText(rBest.value, info.best ? formatPct(info.best.pct, 1) : '—');
       setText(rKills, String(info.kills));
       setText(rTime, formatTime(info.time));
       offer = { handlers, remaining: REVIVE_COUNTDOWN_MS, deadline: 0, pending: false };
@@ -545,6 +577,7 @@ export function createScreens(root: HTMLElement): Screens {
       drawCountdown(REVIVE_COUNTDOWN_MS);
       revive.hidden = false;
       document.addEventListener('keydown', onReviveKey);
+      document.addEventListener('visibilitychange', onReviveVisibility);
       reviveBtn.focus({ preventScroll: true });
       runCountdown();
     },

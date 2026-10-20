@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildLeaderboard, cleanName, countdownFraction, countdownSeconds, createPctTween, formatPct, formatTime,
+  buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
   reviveSubtitle, type BoardEntry,
 } from '../src/ui/screens';
 
@@ -104,11 +104,18 @@ describe('revive modal helpers', () => {
     expect(countdownFraction(-1, 5000)).toBe(0);
     expect(countdownFraction(6000, 5000)).toBe(1);
   });
+  it('a hidden tab pauses the countdown with what was left, never below 0', () => {
+    // deadline 7000, hidden at 4500: 2500 left; resumes later with the same 2500 left.
+    expect(pausedRemaining(7000, 4500)).toBe(2500);
+    expect(pausedRemaining(7000, 9000)).toBe(0);
+  });
   it('words the subtitle by cause', () => {
     expect(reviveSubtitle('trail', 'Mango')).toEqual({ pre: 'Rival ', name: 'Mango', post: ' crossed your trail' });
     expect(reviveSubtitle('headon', 'Kiwi')).toEqual({ pre: 'Rival ', name: 'Kiwi', post: ' crashed into you' });
     expect(reviveSubtitle('captured', 'Kiwi')).toEqual({ pre: 'Rival ', name: 'Kiwi', post: ' crashed into you' });
     expect(reviveSubtitle('self', null)).toEqual({ pre: 'You crossed your own trail', name: '', post: '' });
-    expect(reviveSubtitle('trail', null)).toEqual({ pre: 'You crossed your own trail', name: '', post: '' });
+    expect(reviveSubtitle('trail', null)).toEqual({ pre: 'Your trail burned out', name: '', post: '' });
+    expect(reviveSubtitle('captured', null)).toEqual({ pre: 'Your land was taken', name: '', post: '' });
+    expect(reviveSubtitle('self', 'Kiwi')).toEqual({ pre: 'You crossed your own trail', name: '', post: '' });
   });
 });

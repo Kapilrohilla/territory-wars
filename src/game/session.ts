@@ -108,8 +108,8 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       mini.width = Math.round(miniSize * dpr);
       mini.height = Math.round(miniSize * dpr);
     }
-    // Resizing clears the canvas; repaint so it never goes blank while stopped.
-    if (!running) paint(lastAlpha);
+    // Resizing clears the canvas; repaint so it never goes blank while stopped or frozen.
+    if (!running || world.awaitingRevive) paint(lastAlpha);
   };
   // Camera must be placed before the first paint.
   camera.update(world.players[world.humanId].pos, pct(world, world.humanId), 0);
@@ -135,6 +135,8 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   let downAt: number | null = null;
   let downNotified = false;
   let reviveRequested = false;
+  /** The settled frozen frame has been painted; later frames skip painting until unfrozen. */
+  let frozenPainted = false;
 
   const stepFn = () => {
     if (world.over || world.awaitingRevive) return;
@@ -154,9 +156,16 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     const a = world.over || world.awaitingRevive ? 1 : alpha;
     lastAlpha = a;
     effects.update(dt);
-    const human = world.players[world.humanId];
-    camera.update(interpPos(human, a), pct(world, world.humanId), dt);
-    paint(a);
+    // Frozen behind the revive modal with no effect left to play: the frame is static under
+    // the blurred overlay, so skip repainting it (resize still repaints). Painting resumes
+    // after revive()/giveUp(), which clear awaitingRevive.
+    const idleFrozen = world.awaitingRevive && !effects.busy();
+    if (!idleFrozen || !frozenPainted) {
+      const human = world.players[world.humanId];
+      camera.update(interpPos(human, a), pct(world, world.humanId), dt);
+      paint(a);
+    }
+    frozenPainted = idleFrozen; // one paint after the effects settle, then none
 
     if (world.awaitingRevive && !downNotified) {
       if (downAt === null) downAt = now;

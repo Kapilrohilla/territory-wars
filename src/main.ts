@@ -85,6 +85,7 @@ function play(prefs: StartPrefs): void {
         killerName,
         cause: world.downCause ?? 'self',
         best: loadBest(prefs.difficulty), // recorded only at the end, so this is the pre-run best
+        difficulty: prefs.difficulty,
         kills: human.kills,
         time: world.time,
       }, {

@@ -174,16 +174,43 @@ function addRange(ctx: CanvasRenderingContext2D, pts: Vec[], cum: number[], a: n
   ctx.lineTo(e.x, e.y);
 }
 
+const EMBER_GLOW_R = EMBER_R * 4;
+const EMBER_SPRITE_PX = 64;
+let emberSprite: HTMLCanvasElement | null = null;
+
+/** Soft orange-pink glow, drawn once into an offscreen canvas and reused (no per-frame shadowBlur). */
+function getEmberSprite(): HTMLCanvasElement | null {
+  if (emberSprite) return emberSprite;
+  if (typeof document === 'undefined') return null;
+  const c = document.createElement('canvas');
+  c.width = c.height = EMBER_SPRITE_PX;
+  const g = c.getContext('2d');
+  if (!g) return null;
+  const r = EMBER_SPRITE_PX / 2;
+  const grad = g.createRadialGradient(r, r, 0, r, r, r);
+  grad.addColorStop(0, 'rgba(255, 150, 120, 0.95)');
+  grad.addColorStop(0.35, 'rgba(255, 120, 90, 0.55)');
+  grad.addColorStop(1, 'rgba(255, 120, 90, 0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, EMBER_SPRITE_PX, EMBER_SPRITE_PX);
+  emberSprite = c;
+  return c;
+}
+
 function drawEmber(ctx: CanvasRenderingContext2D, at: Vec, time: number, phase: number): void {
   const f = 0.5 + 0.5 * Math.sin((time * EMBER_FLICKER_HZ + phase) * Math.PI * 2);
-  ctx.save();
-  ctx.shadowColor = 'rgba(255, 120, 90, 0.9)';
-  ctx.shadowBlur = 6 + 6 * f;
+  const sprite = getEmberSprite();
+  if (sprite) {
+    const gr = EMBER_GLOW_R * (0.75 + 0.5 * f);
+    const prevAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = prevAlpha * (0.7 + 0.3 * f);
+    ctx.drawImage(sprite, at.x - gr, at.y - gr, gr * 2, gr * 2);
+    ctx.globalAlpha = prevAlpha;
+  }
   ctx.beginPath();
   ctx.arc(at.x, at.y, EMBER_R * (0.85 + 0.3 * f), 0, Math.PI * 2);
   ctx.fillStyle = `rgba(255, ${Math.round(110 + 50 * f)}, ${Math.round(100 + 40 * f)}, ${0.75 + 0.25 * f})`;
   ctx.fill();
-  ctx.restore();
 }
 
 /** Path-length table for a trail polyline (trail + head); `at` positions run from trail[0]. */

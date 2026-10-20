@@ -374,6 +374,9 @@ canvas#game {
   gap: 8px;
 }
 .tw-revive-stat {
+  /* Column so values line up even when a long label ("Best · Normal") wraps on a phone. */
+  display: flex;
+  flex-direction: column;
   padding: 10px 4px;
   border-radius: 16px;
   background: hsl(40, 33%, 95%);
@@ -386,7 +389,7 @@ canvas#game {
   text-transform: uppercase;
   color: var(--tw-ink-soft);
 }
-.tw-revive-stat-value { margin-top: 2px; font-size: 22px; font-weight: 900; font-variant-numeric: tabular-nums; }
+.tw-revive-stat-value { margin-top: auto; padding-top: 2px; font-size: 22px; font-weight: 900; font-variant-numeric: tabular-nums; }
 
 .tw-btn.tw-revive-btn {
   display: flex;
