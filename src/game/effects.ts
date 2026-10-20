@@ -3,7 +3,7 @@ import type { MultiPoly, Vec } from '../sim/geometry';
 import type { GameEvent, World } from '../sim/types';
 import type { Camera } from './camera';
 import { LIP_OFFSET, landPath, playerColors } from './render';
-import { playPop } from './sound';
+import { vibrate } from '../native/platform';
 
 const CAPTURE_S = 0.2;
 const CAPTURE_SCALE0 = 1.04;
@@ -99,8 +99,7 @@ export function createEffects(): Effects {
           if (p.isHuman && e.gainedPct > 0) {
             texts.push({ text: formatGain(e.gainedPct), colorIndex: p.colorIndex, at: { x: p.pos.x, y: p.pos.y }, t: 0 });
             cam.nudge(NUDGE);
-            try { (globalThis.navigator as Navigator | undefined)?.vibrate?.(VIBRATE_MS); } catch { /* ignore */ }
-            playPop();
+            vibrate(VIBRATE_MS);
           }
         } else if (e.type === 'death') {
           const p = world.players[e.playerId];

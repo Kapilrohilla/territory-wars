@@ -347,7 +347,10 @@ function resolveCollisions(world: World, alive: Player[], pending: Pending) {
       }
       // A rival trail hit doesn't kill outright: it sets the trail burning from the hit point.
       const s = trailHitAt(world, a, b);
-      if (s !== null) b.burn = { s0: s, back: s, front: s, ...creditOf(world, a) };
+      if (s !== null) {
+        b.burn = { s0: s, back: s, front: s, ...creditOf(world, a) };
+        world.events.push({ type: 'cut', hitterId: a.id, victimId: b.id });
+      }
     }
   }
   for (let i = 0; i < alive.length; i++) {

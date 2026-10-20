@@ -8,6 +8,8 @@ import { createInput } from './input';
 import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
 import { drawMinimap } from './minimap';
+import { soundsFor } from './sfxEvents';
+import { playSound } from './sound';
 import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
 
 export type SessionOpts = {
@@ -123,7 +125,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
 
   const notifyEvents = () => {
     // world.events only holds the latest step's (or revive call's) events.
-    if (world.events.length) effects.onEvents(world.events, world, camera);
+    if (world.events.length) {
+      effects.onEvents(world.events, world, camera);
+      for (const name of soundsFor(world.events, world)) playSound(name);
+    }
   };
   const recordFinalPct = () => {
     const h = world.players[world.humanId];
@@ -227,6 +232,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
         return false;
       }
       reviveHuman(world);
+      playSound('revive');
       snapshotFx(fx, world);
       lastFrame = null;
       return true;

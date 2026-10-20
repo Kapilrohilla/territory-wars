@@ -54,6 +54,8 @@ export type GameEvent =
   | { type: 'death'; playerId: number; killerId: number | null; cause: DeathCause }
   /** The human was knocked out but may still be revived (the world is frozen meanwhile). */
   | { type: 'down'; playerId: number; killerId: number | null; cause: DeathCause }
+  /** `hitterId` crossed `victimId`'s trail, which starts burning toward its owner. */
+  | { type: 'cut'; hitterId: number; victimId: number }
   | { type: 'win' }
   | { type: 'gameover' };
 
