@@ -15,6 +15,10 @@ export const COLOR_COUNT = 13;
 const ARENA_AREA = Math.PI * CONFIG.ARENA_R * CONFIG.ARENA_R;
 const SPAWN_TRIES = 40;
 const SPAWN_CLEARANCE = 1.5;
+const MOVE_R = CONFIG.ARENA_R - CONFIG.WALL_PAD;
+const ARENA_POLY: MultiPoly = [[circleRing({ x: 0, y: 0 }, CONFIG.ARENA_R, CONFIG.ARENA_VERTS)]];
+/** Trails that come this close to the wall may stick out of the arena once thickened. */
+const CLIP_NEAR_R = CONFIG.ARENA_R - 1;
 
 /** A random source that reads and advances world.rngState (keeps World serializable). */
 function worldRng(world: World): () => number {
@@ -159,7 +163,8 @@ function markDead(pending: Map<number, number | null>, victim: number, killer: n
 function capture(world: World, p: Player, pending: Map<number, number | null>) {
   const before = pct(world, p.id);
   const oldLand = p.land;
-  const newLand = captureLand(oldLand, p.trail);
+  const nearWall = p.trail.some((q) => q.x * q.x + q.y * q.y > CLIP_NEAR_R * CLIP_NEAR_R);
+  const newLand = captureLand(oldLand, p.trail, nearWall ? ARENA_POLY : undefined);
   p.land = newLand;
   p.trail = [];
   const box = bbox(newLand);
@@ -175,6 +180,26 @@ function capture(world: World, p: Player, pending: Map<number, number | null>) {
   world.events.push({ type: 'capture', playerId: p.id, gainedPct: pct(world, p.id) - before, region });
 }
 
+/**
+ * Moves p by `d` along its heading. A move that would leave the arena slides along the
+ * wall's tangent at full speed instead (counter-clockwise when heading straight outward),
+ * and the heading follows the wall, so holding into the wall keeps gliding along it rather
+ * than chattering against it. Steering inwards leaves the wall as usual.
+ */
+function moveInside(p: Player, d: number): void {
+  const cx = Math.cos(p.heading), cy = Math.sin(p.heading);
+  const next = { x: p.pos.x + cx * d, y: p.pos.y + cy * d };
+  const r = Math.hypot(p.pos.x, p.pos.y);
+  if (next.x * next.x + next.y * next.y <= MOVE_R * MOVE_R || r === 0) {
+    p.pos = clampToCircle(next, MOVE_R);
+    return;
+  }
+  let tx = -p.pos.y / r, ty = p.pos.x / r;
+  if (cx * tx + cy * ty < 0) { tx = -tx; ty = -ty; }
+  p.pos = clampToCircle({ x: p.pos.x + tx * d, y: p.pos.y + ty * d }, MOVE_R);
+  p.heading = Math.atan2(ty, tx);
+}
+
 /** Turn, move, clamp, extend trail, capture on re-entry. */
 function advance(world: World, p: Player, input: Input | undefined, pending: Map<number, number | null>) {
   if (input && input.targetHeading !== null) p.targetHeading = wrap(input.targetHeading);
@@ -184,10 +209,7 @@ function advance(world: World, p: Player, input: Input | undefined, pending: Map
 
   p.prevPos = p.pos;
   const d = CONFIG.SPEED * CONFIG.DT;
-  p.pos = clampToCircle(
-    { x: p.pos.x + Math.cos(p.heading) * d, y: p.pos.y + Math.sin(p.heading) * d },
-    CONFIG.ARENA_R,
-  );
+  moveInside(p, d);
 
   const inside = landContains(p.land, p.pos);
   if (!inside) {

@@ -217,6 +217,36 @@ describe('world', () => {
     expect(Math.hypot(h.pos.x, h.pos.y)).toBeLessThanOrEqual(CONFIG.ARENA_R + 1e-6);
     for (const p of h.trail) expect(Math.hypot(p.x, p.y)).toBeLessThanOrEqual(CONFIG.ARENA_R + 1e-6);
     expect(h.trail.length).toBeGreaterThan(0);
+    // Now head home: the wall-riding loop must capture, and the new land stays inside the arena.
+    let captured = false;
+    for (let i = 0; i < 60 * 20 && !captured && h.alive; i++) {
+      step(w, steer(Math.atan2(-h.pos.y, -h.pos.x)));
+      captured = w.events.some((e) => e.type === 'capture' && e.playerId === 0);
+    }
+    expect(captured).toBe(true);
+    expect(h.alive).toBe(true);
+    let maxR = 0;
+    for (const poly of h.land) for (const ring of poly) for (const q of ring) maxR = Math.max(maxR, Math.hypot(q.x, q.y));
+    expect(maxR).toBeLessThanOrEqual(CONFIG.ARENA_R + 1e-6);
+    expect(maxR).toBeGreaterThan(CONFIG.ARENA_R - 0.1); // the band reached the wall and was clipped there
+  });
+
+  it('heading straight into the wall slides along it at full speed', () => {
+    const w = soloWorld();
+    const h = w.players[0];
+    h.pos = v(CONFIG.ARENA_R - 0.05, 0);
+    h.prevPos = { ...h.pos };
+    h.heading = 0; // straight outward
+    h.targetHeading = 0;
+    const start = { ...h.pos };
+    let maxR = 0;
+    for (let i = 0; i < 60; i++) {
+      step(w, NO_INPUT);
+      maxR = Math.max(maxR, Math.hypot(h.pos.x, h.pos.y));
+    }
+    expect(maxR).toBeLessThanOrEqual(CONFIG.ARENA_R + 1e-9);
+    expect(Math.hypot(h.pos.x - start.x, h.pos.y - start.y)).toBeGreaterThanOrEqual(5);
+    expect(h.alive).toBe(true);
   });
 
   it('pct of fresh human ≈ 0.09', () => {

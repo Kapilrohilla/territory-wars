@@ -1,5 +1,10 @@
 export const CONFIG = {
   ARENA_R: 100,
+  /** Captured land is clipped to an inscribed polygon with this many vertices. */
+  ARENA_VERTS: 128,
+  /** Players are kept this far inside the wall, so a player riding the wall on its own
+   *  (clipped) land is still inside it: 100·(1 − cos(π/128)) ≈ 0.03 < 0.05. */
+  WALL_PAD: 0.05,
   START_R: 3,
   START_VERTS: 24,
   SPEED: 10,
