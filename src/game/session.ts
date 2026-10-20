@@ -7,6 +7,7 @@ import { createCamera, type Camera } from './camera';
 import { createInput } from './input';
 import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
+import { drawMinimap } from './minimap';
 import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
 
 export type SessionOpts = {
@@ -19,6 +20,8 @@ export type SessionOpts = {
    * disposed by then; the last frame stays on the canvas.
    */
   onOver?: (world: World) => void;
+  /** Optional overview canvas (sized by CSS); redrawn every frame. */
+  minimap?: HTMLCanvasElement;
 };
 
 export type Session = {
@@ -50,6 +53,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const brains = createBrains(world);
   const rng = mulberry32(seed ^ 0x9e3779b9);
   const ctx = canvas.getContext('2d')!;
+  const mini = opts.minimap ?? null;
+  const miniCtx = mini?.getContext('2d') ?? null;
+  let miniSize = 0;
   const camera = createCamera();
   const fx = createFx();
   const effects = createEffects();
@@ -68,6 +74,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const paint = (alpha: number) => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     render(ctx, world, camera, alpha, fx, effects);
+    if (miniCtx && miniSize > 0) drawMinimap(miniCtx, world, miniSize, dpr, alpha, camera);
   };
 
   const resize = () => {
@@ -78,6 +85,11 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     canvas.style.width = `${w}px`;
     canvas.style.height = `${h}px`;
     camera.resize(w, h);
+    if (mini) {
+      miniSize = mini.getBoundingClientRect().width;
+      mini.width = Math.round(miniSize * dpr);
+      mini.height = Math.round(miniSize * dpr);
+    }
     // Resizing clears the canvas; repaint so it never goes blank while stopped.
     if (!running) paint(lastAlpha);
   };

@@ -1,6 +1,7 @@
 import { PALETTE } from '../game/palette';
 import { pct } from '../sim/world';
 import type { World } from '../sim/types';
+import type { BestScore } from './best';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -78,16 +79,19 @@ export function cleanName(raw: string): string {
 // ---------- DOM ----------
 
 export type StartPrefs = { name: string; color: number };
-export type OverStats = { won: boolean; pct: number; kills: number; time: number };
+export type OverStats = { won: boolean; pct: number; kills: number; time: number; newBest: boolean };
 
 export type Screens = {
-  showStart(prefs: StartPrefs, onPlay: (prefs: StartPrefs) => void): void;
+  /** Home screen: best score, name, colour and Play. */
+  showStart(prefs: StartPrefs, best: BestScore | null, onPlay: (prefs: StartPrefs) => void): void;
+  /** Overview canvas in the HUD's bottom-right corner. */
+  minimap: HTMLCanvasElement;
   showHud(): void;
   /** Refreshes the HUD; returns true while the % counter is animating (call tickHud per frame). */
   updateHud(world: World, now: number): boolean;
   /** Advances the % counter animation; returns true while it is still animating. */
   tickHud(now: number): boolean;
-  showOver(stats: OverStats, onAgain: () => void): void;
+  showOver(stats: OverStats, onAgain: () => void, onHome: () => void): void;
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -111,6 +115,12 @@ export function createScreens(root: HTMLElement): Screens {
   const startCard = el('div', 'tw-card');
   startCard.append(el('h1', 'tw-title', 'Territory Wars'));
   startCard.append(el('p', 'tw-tagline', 'Loop out, come home, claim the map.'));
+  const bestBox = el('div', 'tw-best');
+  const bestLabel = el('div', 'tw-best-label', 'Best score');
+  const bestPct = el('div', 'tw-best-pct');
+  const bestMeta = el('div', 'tw-best-meta');
+  bestBox.append(bestLabel, bestPct, bestMeta);
+  startCard.append(bestBox);
   const nameLabel = el('label', 'tw-label', 'Your name');
   const nameInput = el('input', 'tw-input');
   nameInput.type = 'text';
@@ -140,7 +150,7 @@ export function createScreens(root: HTMLElement): Screens {
   const hint = el('p', 'tw-hint',
     'Drag anywhere (or use arrow keys / WASD) to steer. Leave your land and loop back to claim the area. ' +
     'Cross a rival’s trail to knock them out — but guard your own.');
-  startCard.append(nameLabel, nameInput, colorLabel, swatches, playBtn, hint);
+  startCard.append(playBtn, nameLabel, nameInput, colorLabel, swatches, hint);
   start.append(startCard);
 
   let chosen = 0;
@@ -197,12 +207,16 @@ export function createScreens(root: HTMLElement): Screens {
     board.append(r);
     rowEls.push({ root: r, rank, swatch, name, pct: p, key: '' });
   }
-  hud.append(stats, board);
+  const minimap = el('canvas', 'tw-minimap');
+  minimap.setAttribute('aria-label', 'Map of the whole arena');
+  minimap.setAttribute('role', 'img');
+  hud.append(stats, board, minimap);
 
   // ----- game over -----
   const over = el('div', 'tw-screen tw-over');
   const overCard = el('div', 'tw-card');
   const overTitle = el('h2', 'tw-over-title');
+  const newBestEl = el('div', 'tw-new-best', 'New best!');
   const overStats = el('div', 'tw-over-stats');
   const stat = (label: string) => {
     const box = el('div', 'tw-stat');
@@ -216,14 +230,19 @@ export function createScreens(root: HTMLElement): Screens {
   const overTime = stat('Survived');
   const againBtn = el('button', 'tw-btn tw-again', 'Play again');
   againBtn.type = 'button';
-  overCard.append(overTitle, overStats, againBtn);
+  const homeBtn = el('button', 'tw-btn tw-home', 'Home');
+  homeBtn.type = 'button';
+  overCard.append(overTitle, newBestEl, overStats, againBtn, homeBtn);
   over.append(overCard);
   let onAgainCb: (() => void) | null = null;
-  againBtn.addEventListener('click', () => {
-    const cb = onAgainCb;
-    onAgainCb = null;
+  let onHomeCb: (() => void) | null = null;
+  const leaveOver = (which: 'again' | 'home') => {
+    const cb = which === 'again' ? onAgainCb : onHomeCb;
+    onAgainCb = onHomeCb = null; // one click = one action
     cb?.();
-  });
+  };
+  againBtn.addEventListener('click', () => leaveOver('again'));
+  homeBtn.addEventListener('click', () => leaveOver('home'));
 
   root.append(hud, start, over);
   const all = [start, hud, over];
@@ -231,7 +250,17 @@ export function createScreens(root: HTMLElement): Screens {
   only(start);
 
   return {
-    showStart(prefs, onPlay) {
+    minimap,
+    showStart(prefs, best, onPlay) {
+      if (best) {
+        setText(bestPct, formatPct(best.pct, 2));
+        setText(bestMeta, `${best.kills} ${best.kills === 1 ? 'kill' : 'kills'} · ${formatTime(best.time)} survived`);
+        bestBox.classList.remove('tw-best-empty');
+      } else {
+        setText(bestPct, '—');
+        setText(bestMeta, 'No best yet. Go claim some land!');
+        bestBox.classList.add('tw-best-empty');
+      }
       nameInput.value = prefs.name;
       pick(((prefs.color % swatchBtns.length) + swatchBtns.length) % swatchBtns.length);
       onPlayCb = onPlay;
@@ -272,13 +301,15 @@ export function createScreens(root: HTMLElement): Screens {
       });
       return pctTween.active(now);
     },
-    showOver(s, onAgain) {
+    showOver(s, onAgain, onHome) {
+      newBestEl.hidden = !s.newBest;
       setText(overTitle, s.won ? 'You won!' : 'Game over');
       over.classList.toggle('tw-won', s.won);
       setText(overPct, formatPct(s.pct, 2));
       setText(overKills, String(s.kills));
       setText(overTime, formatTime(s.time));
       onAgainCb = onAgain;
+      onHomeCb = onHome;
       only(over);
       againBtn.focus({ preventScroll: true });
     },

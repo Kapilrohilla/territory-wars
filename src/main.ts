@@ -1,6 +1,7 @@
 import { createSession, type Session } from './game/session';
 import { unlockAudio } from './game/sound';
 import { PALETTE } from './game/palette';
+import { loadBest, recordRun } from './ui/best';
 import { cleanName, createScreens, DEFAULT_NAME, type StartPrefs } from './ui/screens';
 
 const HUD_INTERVAL_MS = 100;
@@ -56,7 +57,7 @@ function refreshHud(world: Session['world']): void {
 }
 
 function toStart(): void {
-  ui.showStart(loadPrefs(), (prefs) => {
+  ui.showStart(loadPrefs(), loadBest(), (prefs) => {
     unlockAudio(); // inside the click gesture
     savePrefs(prefs);
     play(prefs);
@@ -66,17 +67,23 @@ function toStart(): void {
 function play(prefs: StartPrefs): void {
   stopHud();
   session?.dispose();
+  ui.showHud(); // before the session so the minimap has its CSS size
   const s = createSession(canvas, {
+    minimap: ui.minimap,
     humanName: prefs.name,
     humanColor: prefs.color,
     onOver: (world) => {
       stopHud();
       const human = world.players[world.humanId];
-      ui.showOver({ won: world.won, pct: s.finalPct(), kills: human.kills, time: world.time }, toStart);
+      const run = { pct: s.finalPct(), kills: human.kills, time: world.time };
+      const newBest = recordRun(run);
+      ui.showOver({ ...run, won: world.won, newBest }, () => {
+        unlockAudio();
+        play(prefs);
+      }, toStart);
     },
   });
   session = s;
-  ui.showHud();
   refreshHud(s.world);
   // Frozen once over, so the death-shrink tail doesn't read as 0%.
   hudTimer = setInterval(() => { if (!s.world.over) refreshHud(s.world); }, HUD_INTERVAL_MS);
