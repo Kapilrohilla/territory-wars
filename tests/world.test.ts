@@ -210,7 +210,7 @@ describe('world', () => {
     h.heading = Math.PI; h.targetHeading = Math.PI; // keep the human away
     const b = placeBot(w, v(5, 41), Math.PI / 2);
     b.trail = [v(5, -20), v(5, 40)];
-    b.burn = { s0: 20, back: 10, front: 30, killerId: 0 };
+    b.burn = { s0: 20, back: 10, front: 30, killerId: 0, killerDeaths: 0 };
     const c = w.players[2];
     Object.assign(c, {
       alive: true, pos: v(3, 0), prevPos: v(3, 0), heading: 0, targetHeading: 0,
@@ -236,9 +236,82 @@ describe('world', () => {
     b.trail = [v(-30, 0), v(30, 0), v(30, 20), v(0, 20)];
     b.trail.push(v(0, 2)); // live tail runs (0,20) → (0,2)
     b.pos = v(0, 1.9); b.prevPos = v(0, 2);
-    b.burn = { s0: 30, back: 20, front: 40, killerId: 2 };
+    b.burn = { s0: 30, back: 20, front: 40, killerId: 2, killerDeaths: 0 };
     for (let i = 0; i < 30; i++) step(w, NO_INPUT);
     expect(b.alive).toBe(true);
+  });
+
+  it('own burning trail: crossing an unburnt segment still kills instantly', () => {
+    const w = soloWorld();
+    const h = w.players[0];
+    h.heading = Math.PI; h.targetHeading = Math.PI;
+    // Same loop, but the burn sits on the (30,20)→(0,20) leg; the crossing at y = 0 (s = 30) is unburnt.
+    const b = placeBot(w, v(0, 2), -Math.PI / 2);
+    b.trail = [v(-30, 0), v(30, 0), v(30, 20), v(0, 20)];
+    b.trail.push(v(0, 2));
+    b.pos = v(0, 1.9); b.prevPos = v(0, 2);
+    b.burn = { s0: 90, back: 85, front: 95, killerId: 2, killerDeaths: 0 };
+    let ticks = 0, death = null;
+    while (!death && ticks < 30) {
+      step(w, NO_INPUT);
+      ticks++;
+      death = w.events.find((e) => e.type === 'death') ?? null;
+    }
+    expect(death).toEqual({ type: 'death', playerId: 1, killerId: null, cause: 'self' });
+    // Instant: dies on the tick its head crosses y = 0 (1.9 u at 1/6 u per tick), not when a burn arrives.
+    expect(ticks).toBeLessThanOrEqual(Math.ceil(1.9 / (CONFIG.SPEED * CONFIG.DT)) + 1);
+  });
+
+  describe('burn credit', () => {
+    /** Bot 1 crosses the human's trail (head far up at y = 10), then bot 2 kills bot 1 head-on. */
+    function burnThenKillHitter(w: World): Player {
+      const h = w.players[0];
+      h.pos = v(10, 10.2);
+      h.prevPos = v(10, 10.1);
+      h.heading = Math.PI / 2;
+      h.targetHeading = Math.PI / 2;
+      h.trail = [v(2.5, 0), v(10, 0), v(10, 10)];
+      const b1 = placeBot(w, v(6, 1), -Math.PI / 2);
+      for (let i = 0; i < 60 && !h.burn; i++) step(w, NO_INPUT);
+      expect(h.burn?.killerId).toBe(1);
+      const c = w.players[2];
+      Object.assign(c, {
+        alive: true, pos: v(b1.pos.x, b1.pos.y - 0.6), prevPos: v(b1.pos.x, b1.pos.y - 0.6),
+        heading: Math.PI / 2, targetHeading: Math.PI / 2,
+        land: disk(v(-40, -40), 8), trail: [], respawnAt: null, deathTime: null, dyingLand: null, burn: null,
+      });
+      step(w, NO_INPUT);
+      expect(b1.alive).toBe(false);
+      expect(h.alive).toBe(true);
+      return b1;
+    }
+
+    const runToDown = (w: World) => {
+      for (let i = 0; i < 120 && !w.awaitingRevive; i++) step(w, NO_INPUT);
+      expect(w.awaitingRevive).toBe(true);
+    };
+
+    it('credits nobody when the hitter is dead when the burn arrives', () => {
+      const w = soloWorld();
+      const b1 = burnThenKillHitter(w);
+      runToDown(w);
+      expect(b1.alive).toBe(false);
+      expect(w.events).toContainEqual({ type: 'down', playerId: 0, killerId: null, cause: 'trail' });
+      expect(w.downKillerId).toBeNull();
+      expect(b1.kills).toBe(0);
+    });
+
+    it('credits nobody when the hitter has respawned since the hit', () => {
+      const w = soloWorld();
+      const b1 = burnThenKillHitter(w);
+      b1.respawnAt = w.time; // respawn on the next tick, well before the burn arrives
+      step(w, NO_INPUT);
+      expect(b1.alive).toBe(true);
+      runToDown(w);
+      expect(b1.alive).toBe(true);
+      expect(w.events).toContainEqual({ type: 'down', playerId: 0, killerId: null, cause: 'trail' });
+      expect(b1.kills).toBe(0);
+    });
   });
 
   it('self trail kills self', () => {
@@ -590,6 +663,61 @@ describe('revive', () => {
     placeBot(w, v(h.pos.x + 0.6, h.pos.y), Math.PI, v(40, 40), 8);
     step(w, NO_INPUT);
     expect(h.alive).toBe(true);
+  });
+
+  /**
+   * Bot 1 (land south of the origin) is one step from closing a loop that encloses
+   * x in [-hw, hw], y up to `top`, around the revived human at the origin.
+   */
+  function captureAround(w: World, hw: number, top: number): Player {
+    const b = placeBot(w, v(hw, -5.0), -Math.PI / 2, v(0, -12), 7.5);
+    b.prevPos = v(hw, -4.9);
+    b.trail = [v(-hw, -6), v(-hw, top), v(hw, top), v(hw, -4.9)];
+    return b;
+  }
+  const revivedAtOrigin = (w: World): Player => {
+    knockedOut(w, disk(v(0, 0), 3));
+    reviveHuman(w);
+    const h = w.players[0];
+    h.pos = v(0, 0); h.prevPos = v(0, 0);
+    h.heading = Math.PI / 2; h.targetHeading = Math.PI / 2;
+    return h;
+  };
+  const captured = (w: World) => w.events.some((e) => e.type === 'capture' && e.playerId === 1);
+
+  it('a capture covering a protected human head does not kill it', () => {
+    const w = soloWorld();
+    const h = revivedAtOrigin(w);
+    captureAround(w, 1.5, 1.5);
+    let cap = false;
+    for (let i = 0; i < 30 && !cap; i++) { step(w, NO_INPUT); cap = captured(w); }
+    expect(cap).toBe(true);
+    expect(h.alive).toBe(true);
+    expect(h.land.length).toBeGreaterThan(0); // keeps a side piece
+    expect(w.events.some((e) => e.type === 'down' || e.type === 'death')).toBe(false);
+  });
+
+  it('a protected human whose land is all taken dies once protection ends', () => {
+    const w = soloWorld();
+    const h = revivedAtOrigin(w);
+    const b = captureAround(w, 4, 4);
+    let cap = false;
+    for (let i = 0; i < 30 && !cap; i++) { step(w, NO_INPUT); cap = captured(w); }
+    expect(cap).toBe(true);
+    expect(h.land).toEqual([]);
+    let death = null;
+    for (let i = 0; i < 200 && !death; i++) {
+      expect(h.alive).toBe(true);
+      step(w, NO_INPUT);
+      death = w.events.find((e) => e.type === 'death') ?? null;
+      if (!death) expect(w.time).toBeLessThan(h.protectedUntil);
+    }
+    expect(death).toEqual({ type: 'death', playerId: 0, killerId: 1, cause: 'captured' });
+    expect(h.alive).toBe(false);
+    expect(w.time).toBeGreaterThanOrEqual(h.protectedUntil);
+    expect(w.time - CONFIG.DT).toBeLessThan(h.protectedUntil); // the first tick after protection
+    expect(b.kills).toBe(1);
+    expect(w.over).toBe(true);
   });
 
   it('the second death ends the game', () => {

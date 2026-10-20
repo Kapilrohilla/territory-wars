@@ -28,9 +28,19 @@ export type Player = {
   burn: Burn | null;
   /** World time until which this player can't be killed (after a revive); 0 = never protected. */
   protectedUntil: number;
+  /** How many times this player has died (or been knocked out); tells one life from the next. */
+  deaths: number;
+  /**
+   * Who took the last of this player's land. A protected player stays alive landless until
+   * its protection ends, and that death is credited to this rival. Cleared on death/respawn.
+   */
+  landTakenBy: Credit | null;
 };
 
-export type Burn = { s0: number; back: number; front: number; killerId: number };
+/** A kill credit taken at the hit: it only counts if the killer is still on that same life. */
+export type Credit = { killerId: number; killerDeaths: number };
+
+export type Burn = { s0: number; back: number; front: number } & Credit;
 
 /**
  * What killed a player: a burn reaching the head ('trail'), crossing one's own trail

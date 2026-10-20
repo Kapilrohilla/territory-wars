@@ -81,6 +81,33 @@ describe('bots', () => {
     expect(Math.abs(angleDiff(inp.get(1)!.targetHeading!, 0))).toBeLessThan(0.5);
   });
 
+  describe('ignores a human it cannot hurt', () => {
+    const huntState = (prep: (w: World) => void) => {
+      const w = setup(1, true);
+      const b = w.players[1];
+      b.pos = v(-30, 0); b.prevPos = v(-30, 0); b.heading = 0; b.targetHeading = 0;
+      b.land = disk(v(-30, 0), 3);
+      const h = w.players[0];
+      h.pos = v(-24, 6); h.prevPos = v(-24, 6);
+      h.land = disk(v(-24, 12), 3);
+      h.trail = [];
+      for (let y = -6; y <= 6; y += 0.25) h.trail.push(v(-24, y));
+      prep(w);
+      const brains = createBrains(w);
+      botInputs(w, brains, mulberry32(3));
+      return brains.get(1)!.state;
+    };
+    it('does not hunt a burning human trail', () => {
+      expect(huntState(() => {})).toBe('hunt');
+      expect(huntState((w) => { w.players[0].burn = { s0: 1, back: 0.5, front: 1.5, killerId: 2, killerDeaths: 0 }; }))
+        .not.toBe('hunt');
+    });
+    it('does not hunt a protected human', () => {
+      expect(huntState((w) => { w.players[0].protectedUntil = w.time + 1; })).not.toBe('hunt');
+      expect(huntState((w) => { w.time = 5; w.players[0].protectedUntil = 4; })).toBe('hunt');
+    });
+  });
+
   it('hunt range scales with difficulty', () => {
     const run = (difficulty: 'easy' | 'normal' | 'hard', trailX: number) => {
       const w = setup(1, true);
@@ -112,7 +139,7 @@ describe('bots', () => {
     for (let y = 0; y > -5; y -= 0.25) b.trail.push(v(-37, y));
     for (let x = -37; x < -30; x += 0.25) b.trail.push(v(x, -5));
     for (let y = -5; y < 0; y += 0.25) b.trail.push(v(-30, y));
-    b.burn = { s0: 2, back: 1, front: 3, killerId: 0 };
+    b.burn = { s0: 2, back: 1, front: 3, killerId: 0, killerDeaths: 0 };
     // Same prey as the hunt test, right in front of the bot.
     const h = w.players[0];
     h.pos = v(-24, 6); h.prevPos = v(-24, 6);

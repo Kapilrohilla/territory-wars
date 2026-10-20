@@ -110,9 +110,12 @@ function trailSegs(t: Player): [Vec, Vec][] {
   return s;
 }
 
-/** Nearest point of the human trail if it lies on one of the hunt rays. */
+/**
+ * Nearest point of the human trail if it lies on one of the hunt rays. A trail that is
+ * already burning (a hit is ignored) or a protected human can't be hurt, so isn't hunted.
+ */
 function huntTarget(world: World, p: Player, human: Player): Vec | null {
-  if (!human.alive || human.trail.length === 0) return null;
+  if (!human.alive || human.trail.length === 0 || human.burn || world.time < human.protectedUntil) return null;
   const segs = trailSegs(human);
   const h = p.heading;
   const mul = DIFFICULTY[world.difficulty].huntRangeMul;

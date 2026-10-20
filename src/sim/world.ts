@@ -6,7 +6,7 @@ import {
 import { captureLand, keepPiece, landArea, landContains, subtractLand } from './territory';
 import { mulberryNext } from './rng';
 import { NAMES } from './names';
-import type { DeathCause, GameEvent, Input, Player, World } from './types';
+import type { Credit, DeathCause, GameEvent, Input, Player, World } from './types';
 
 export type { GameEvent, Input, Player, World } from './types';
 
@@ -87,6 +87,7 @@ export function spawnPlayer(world: World, p: Player, rng: () => number): boolean
     p.land = startLand(c);
     p.trail = [];
     p.burn = null;
+    p.landTakenBy = null;
     p.deathTime = null;
     p.respawnAt = null;
     return true;
@@ -110,6 +111,8 @@ function newPlayer(id: number, name: string, colorIndex: number, isHuman: boolea
     dyingLand: null,
     burn: null,
     protectedUntil: 0,
+    deaths: 0,
+    landTakenBy: null,
   };
 }
 
@@ -172,6 +175,17 @@ function markDead(pending: Pending, victim: number, killer: number | null, cause
 /** Freshly revived players can't be killed for a moment. */
 const isProtected = (world: World, p: Player) => world.time < p.protectedUntil;
 
+const creditOf = (world: World, killer: Player): Credit => ({ killerId: killer.id, killerDeaths: killer.deaths });
+
+/**
+ * The killer to credit for a hit made earlier: nobody when it has died (or died and
+ * respawned) since, so the kill never goes to whoever now wears that slot.
+ */
+function credited(world: World, c: Credit): number | null {
+  const k = world.players[c.killerId];
+  return k && k.alive && k.deaths === c.killerDeaths ? c.killerId : null;
+}
+
 function capture(world: World, p: Player, pending: Pending) {
   const before = pct(world, p.id);
   const oldLand = p.land;
@@ -188,7 +202,11 @@ function capture(world: World, p: Player, pending: Pending) {
     if (landContains(region, q.pos)) markDead(pending, q.id, p.id, 'captured');
     if (q.land.length === 0 || !boxesOverlap(box, bbox(q.land))) continue;
     q.land = keepPiece(subtractLand(q.land, newLand), q.pos);
-    if (q.land.length === 0) markDead(pending, q.id, p.id, 'captured');
+    if (q.land.length === 0) {
+      // A protected player survives for now; killLandless finishes it when protection ends.
+      q.landTakenBy = creditOf(world, p);
+      markDead(pending, q.id, p.id, 'captured');
+    }
   }
   world.events.push({ type: 'capture', playerId: p.id, gainedPct: pct(world, p.id) - before, region });
 }
@@ -279,7 +297,7 @@ function advanceBurns(world: World, alive: Player[], pending: Pending) {
     const len = trailLength(p);
     b.back = Math.max(0, b.back - d);
     b.front = Math.min(len, b.front + d);
-    if (b.front >= len - 1e-9) markDead(pending, p.id, b.killerId, 'trail');
+    if (b.front >= len - 1e-9) markDead(pending, p.id, credited(world, b), 'trail');
   }
 }
 
@@ -329,7 +347,7 @@ function resolveCollisions(world: World, alive: Player[], pending: Pending) {
       }
       // A rival trail hit doesn't kill outright: it sets the trail burning from the hit point.
       const s = trailHitAt(world, a, b);
-      if (s !== null) b.burn = { s0: s, back: s, front: s, killerId: a.id };
+      if (s !== null) b.burn = { s0: s, back: s, front: s, ...creditOf(world, a) };
     }
   }
   for (let i = 0; i < alive.length; i++) {
@@ -348,6 +366,17 @@ function resolveCollisions(world: World, alive: Player[], pending: Pending) {
 }
 
 /**
+ * A player left with no land can't play on. Normally the capture that took it already
+ * killed it; this catches a protected player once its protection runs out.
+ */
+function killLandless(world: World, alive: Player[], pending: Pending) {
+  for (const p of alive) {
+    if (p.land.length > 0 || isProtected(world, p)) continue;
+    markDead(pending, p.id, p.landTakenBy ? credited(world, p.landTakenBy) : null, 'captured');
+  }
+}
+
+/**
  * Kills every pending victim (protected players are spared). The human's first death is a
  * "down" instead: the land moves to dyingLand as usual and the killer is credited now, but
  * the world freezes (awaitingRevive) until reviveHuman or declineRevive.
@@ -357,8 +386,10 @@ function applyDeaths(world: World, pending: Pending) {
     const p = world.players[id];
     if (!p.alive || isProtected(world, p)) continue;
     p.alive = false;
+    p.deaths++;
     p.trail = [];
     p.burn = null;
+    p.landTakenBy = null;
     p.dyingLand = p.land.length > 0 ? p.land : null;
     p.land = [];
     p.deathTime = world.time;
@@ -403,6 +434,7 @@ export function step(world: World, inputs: Map<number, Input>): void {
   for (const p of alive) advance(world, p, inputs.get(p.id), pending);
   advanceBurns(world, alive, pending);
   resolveCollisions(world, alive, pending);
+  killLandless(world, alive, pending);
   applyDeaths(world, pending);
   housekeeping(world);
 
@@ -480,6 +512,7 @@ export function reviveHuman(world: World): void {
   h.alive = true;
   h.trail = [];
   h.burn = null;
+  h.landTakenBy = null;
   h.dyingLand = null;
   h.deathTime = null;
   h.protectedUntil = world.time + CONFIG.REVIVE_PROTECT_S;
