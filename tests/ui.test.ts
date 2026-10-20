@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
-  reviveSubtitle, type BoardEntry,
+  highestBest, hudAlerts, readFlag, reviveSubtitle, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
+import { isVibrationOn, setVibrationOn } from '../src/native/platform';
+import { COLOR_NAMES, PALETTE } from '../src/game/palette';
 
 const e = (id: number, pct: number, isHuman = false): BoardEntry => ({ id, name: `P${id}`, colorIndex: id, pct, isHuman });
 
@@ -117,5 +119,71 @@ describe('revive modal helpers', () => {
     expect(reviveSubtitle('trail', null)).toEqual({ pre: 'Your trail burned out', name: '', post: '' });
     expect(reviveSubtitle('captured', null)).toEqual({ pre: 'Your land was taken', name: '', post: '' });
     expect(reviveSubtitle('self', 'Kiwi')).toEqual({ pre: 'You crossed your own trail', name: '', post: '' });
+  });
+});
+
+describe('hudAlerts', () => {
+  const p = (over: Partial<{ alive: boolean; burn: null | { s0: number; back: number; front: number; killerId: number; killerDeaths: number }; protectedUntil: number }>) =>
+    ({ alive: true, burn: null, protectedUntil: 0, ...over });
+  const burn = { s0: 1, back: 1, front: 1, killerId: 2, killerDeaths: 0 };
+  it('is quiet by default', () => {
+    expect(hudAlerts(p({}), 10)).toEqual({ burning: false, shielded: false });
+  });
+  it('flags a burning trail and an active shield', () => {
+    expect(hudAlerts(p({ burn }), 10).burning).toBe(true);
+    expect(hudAlerts(p({ protectedUntil: 12 }), 10).shielded).toBe(true);
+    expect(hudAlerts(p({ protectedUntil: 12 }), 12).shielded).toBe(false);
+  });
+  it('shows nothing once the player is down', () => {
+    expect(hudAlerts(p({ alive: false, burn, protectedUntil: 99 }), 10)).toEqual({ burning: false, shielded: false });
+  });
+});
+
+describe('highestBest', () => {
+  const b = (pct: number, kills = 0) => ({ pct, kills, time: 60 });
+  it('needs at least two bests to name one', () => {
+    expect(highestBest({})).toBeNull();
+    expect(highestBest({ hard: b(5) })).toBeNull();
+  });
+  it('picks the top % and breaks ties on kills', () => {
+    expect(highestBest({ easy: b(41.2), normal: b(18.2), hard: null })).toBe('easy');
+    expect(highestBest({ easy: b(10, 1), hard: b(10, 3) })).toBe('hard');
+  });
+});
+
+describe('readFlag / writeFlag', () => {
+  const mem = () => {
+    const m = new Map<string, string>();
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { m.set(k, v); } };
+  };
+  it('round-trips and falls back when unset', () => {
+    const s = mem();
+    expect(readFlag('k', true, s)).toBe(true);
+    writeFlag('k', false, s);
+    expect(readFlag('k', true, s)).toBe(false);
+    writeFlag('k', true, s);
+    expect(readFlag('k', false, s)).toBe(true);
+  });
+  it('falls back when storage throws or is missing', () => {
+    const broken = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    expect(readFlag('k', true, broken)).toBe(true);
+    expect(() => writeFlag('k', true, broken)).not.toThrow();
+    expect(readFlag('k', false, undefined)).toBe(false);
+  });
+});
+
+describe('vibration setting', () => {
+  it('is on by default and can be turned off', () => {
+    expect(isVibrationOn()).toBe(true);
+    setVibrationOn(false);
+    expect(isVibrationOn()).toBe(false);
+    setVibrationOn(true);
+    expect(isVibrationOn()).toBe(true);
+  });
+});
+
+describe('palette', () => {
+  it('names every player colour', () => {
+    expect(COLOR_NAMES).toHaveLength(PALETTE.players.length);
   });
 });

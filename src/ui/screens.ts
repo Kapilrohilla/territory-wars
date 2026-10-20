@@ -1,8 +1,9 @@
-import { PALETTE } from '../game/palette';
+import { COLOR_NAMES, PALETTE } from '../game/palette';
 import { isMuted, playSelect, playTick, setMuted, unlockAudio } from '../game/sound';
+import { isNative, isVibrationOn, setVibrationOn } from '../native/platform';
 import { pct } from '../sim/world';
-import { DIFFICULTIES, type Difficulty } from '../sim/config';
-import type { DeathCause, World } from '../sim/types';
+import { CONFIG, DIFFICULTIES, type Difficulty } from '../sim/config';
+import type { DeathCause, Player, World } from '../sim/types';
 import type { BestScore } from './best';
 
 // ---------- pure helpers (unit-tested) ----------
@@ -109,14 +110,59 @@ export function cleanName(raw: string): string {
   return n || DEFAULT_NAME;
 }
 
+export type HudAlerts = { burning: boolean; shielded: boolean };
+
+/** HUD warnings for the human: the trail is burning, or the post-revive shield is up. */
+export function hudAlerts(p: Pick<Player, 'alive' | 'burn' | 'protectedUntil'>, time: number): HudAlerts {
+  return { burning: p.alive && p.burn !== null, shielded: p.alive && time < p.protectedUntil };
+}
+
+/** The difficulty holding the top best (by isBetter's order); null unless 2+ difficulties have one. */
+export function highestBest(bests: Partial<Record<Difficulty, BestScore | null>>): Difficulty | null {
+  let top: Difficulty | null = null;
+  let count = 0;
+  for (const d of DIFFICULTIES) {
+    const b = bests[d];
+    if (!b) continue;
+    count++;
+    const t = top ? bests[top]! : null;
+    if (!t || b.pct > t.pct || (b.pct === t.pct && b.kills > t.kills)) top = d;
+  }
+  return count >= 2 ? top : null;
+}
+
+type FlagStore = Pick<Storage, 'getItem' | 'setItem'> | undefined;
+
+/** A '1'/'0' setting in storage; `fallback` when unset or storage is unavailable. */
+export function readFlag(key: string, fallback: boolean, store: FlagStore = globalThis.localStorage): boolean {
+  try {
+    const v = store?.getItem(key);
+    return v === '1' ? true : v === '0' ? false : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeFlag(key: string, on: boolean, store: FlagStore = globalThis.localStorage): void {
+  try { store?.setItem(key, on ? '1' : '0'); } catch { /* storage unavailable */ }
+}
+
+export const REDUCED_MOTION_KEY = 'territory-wars.reduced-motion';
+
+/** The steering hint fades out after this many seconds of play. */
+export const HINT_SECONDS = 8;
+
 // ---------- DOM ----------
 
 export type StartPrefs = { name: string; color: number; difficulty: Difficulty };
 export type OverStats = {
   won: boolean; pct: number; kills: number; time: number; newBest: boolean; difficulty: Difficulty;
+  /** Best for this difficulty after the run was recorded. */
+  best: BestScore | null;
 };
 
 const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
+const DIFFICULTY_SHORT: Record<Difficulty, string> = { easy: 'Easy', normal: 'Norm', hard: 'Hard' };
 
 /** How long the revive offer stays open before it gives up by itself. */
 export const REVIVE_COUNTDOWN_MS = 5000;
@@ -138,12 +184,18 @@ export type ReviveHandlers = {
 };
 
 export type Screens = {
-  /** Home screen: best score (for the selected difficulty), name, colour, difficulty and Play. */
+  /**
+   * Home screen: best score (for the selected difficulty), name, colour, difficulty and Play.
+   * Records opens the records & settings screen with the prefs as currently picked.
+   */
   showStart(
     prefs: StartPrefs,
     bestFor: (difficulty: Difficulty) => BestScore | null,
     onPlay: (prefs: StartPrefs) => void,
+    onRecords: (prefs: StartPrefs) => void,
   ): void;
+  /** Records & settings: personal bests per difficulty and the settings toggles. */
+  showRecords(bestFor: (difficulty: Difficulty) => BestScore | null, onBack: () => void): void;
   /** Overview canvas in the HUD's bottom-right corner. */
   minimap: HTMLCanvasElement;
   showHud(): void;
@@ -168,87 +220,184 @@ function setText(e: HTMLElement, t: string): void {
   if (e.textContent !== t) e.textContent = t;
 }
 
+function button(cls: string, text?: string): HTMLButtonElement {
+  const b = el('button', cls, text);
+  b.type = 'button';
+  return b;
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svg(tag: string, attrs: Record<string, string>): SVGElement {
+  const e = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+/** 24×24 line icons (stroke = currentColor); names ending in "-fill" are solid shapes. */
+const ICONS = {
+  'play-fill': 'M8 5.5v13l10.5-6.5z',
+  'star': 'M12 3.5l2.6 5.3 5.9.9-4.25 4.1 1 5.8L12 16.9l-5.25 2.75 1-5.8L3.5 9.7l5.9-.9z',
+  'flame': 'M12 3c.6 3.4 5 5.6 5 10.5a5 5 0 0 1-10 0c0-2.4 1.4-4 2.5-5 .2 1.7 1 2.8 2 3.1.4-3-.5-5.6.5-8.6z',
+  'swords': 'M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2M14.5 6.5L18 3h3v3l-3.5 3.5M5 14l4 4M7 17l-3 3M3 19l2 2',
+  'timer': 'M10 2h4M12 14l3-3M20 14a8 8 0 1 1-16 0 8 8 0 0 1 16 0z',
+  'crown-fill': 'M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z',
+  'trophy': 'M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3',
+  'shield': 'M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z',
+  'video': 'M3.5 5.5h17v13h-17zM10 9v6l5-3z',
+  'back': 'M19 12H5M11 6l-6 6 6 6',
+  'chart': 'M4 20h16M6 20v-8h4v8M10 20V5h4v15M14 20v-6h4v6',
+  'close': 'M6 6l12 12M18 6L6 18',
+  'x-circle': 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0zM9 9l6 6M15 9l-6 6',
+  'alert': 'M12 3.5L2.5 20h19zM12 10v4M12 17v.01',
+  'sound': 'M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11',
+  'sound-off': 'M4 9v6h4l5 4V5L8 9zM17 9.5l5 5M22 9.5l-5 5',
+  'vibrate': 'M8.5 4h7v16h-7zM5 8v8M19 8v8M2 10v4M22 10v4',
+  'motion-off': 'M20 12a8 8 0 1 1-16 0 8 8 0 0 1 16 0zM6.3 6.3l11.4 11.4',
+  'gear': 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
+  'check': 'M5 12.5l4.5 4.5L19 7',
+  'id': 'M3.5 6h17v13h-17zM9 13a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM5.8 17c.8-1.7 5.6-1.7 6.4 0M14.5 10h3.5M14.5 14h3.5',
+} as const;
+type IconName = keyof typeof ICONS;
+
+function icon(name: IconName, cls = ''): SVGElement {
+  const fill = name.endsWith('-fill');
+  const s = svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true', class: `tw-icon ${cls}`.trim() });
+  s.append(svg('path', fill
+    ? { d: ICONS[name], fill: 'currentColor' }
+    : { d: ICONS[name], fill: 'none', stroke: 'currentColor', 'stroke-width': '2.2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+  return s;
+}
+
+/** A small uppercase label row: text on the left, optional aside on the right. */
+function labelRow(text: string, aside?: HTMLElement, forId?: string): HTMLElement {
+  const row = el('div', 'tw-label-row');
+  const l = el(forId ? 'label' : 'div', 'tw-label', text);
+  if (forId) (l as HTMLLabelElement).htmlFor = forId;
+  row.append(l);
+  if (aside) row.append(aside);
+  return row;
+}
+
+/** A stat tile (label over value) appended to `parent`; returns the label text and value elements. */
+function statTile(parent: HTMLElement, name: IconName | null, label: string): { label: HTMLElement; value: HTMLElement } {
+  const box = el('div', 'tw-tile');
+  const l = el('div', 'tw-tile-label');
+  const text = el('span', undefined, label);
+  if (name) l.append(icon(name));
+  l.append(text);
+  const value = el('div', 'tw-tile-value tw-num');
+  box.append(l, value);
+  parent.append(box);
+  return { label: text, value };
+}
+
 type RowEls = { root: HTMLElement; rank: HTMLElement; swatch: HTMLElement; name: HTMLElement; pct: HTMLElement; key: string };
 
 export function createScreens(root: HTMLElement): Screens {
   root.classList.add('tw-ui');
 
-  // ----- start -----
-  const start = el('div', 'tw-screen tw-start');
-  const startCard = el('div', 'tw-card');
-  const muteBtns: HTMLButtonElement[] = [];
-  /** A speaker toggle; every instance stays in sync. */
+  // ----- shared settings -----
+  let reducedPref = readFlag(REDUCED_MOTION_KEY, false);
+  const motionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
+  const reduceMotion = () => reducedPref || !!motionQuery?.matches;
+  const applyReduced = () => root.classList.toggle('tw-reduced-motion', reducedPref);
+  applyReduced();
+
+  type Toggle = { btn: HTMLButtonElement; sync(): void };
+  const toggles: Toggle[] = [];
+  const syncAll = () => { for (const t of toggles) t.sync(); };
+  /** In-game speaker toggle; stays in sync with the Sound setting. */
   const muteButton = (cls: string) => {
-    const b = el('button', `tw-mute ${cls}`);
-    b.type = 'button';
+    const b = button(`tw-mute ${cls}`);
     b.addEventListener('click', () => {
       unlockAudio();
       setMuted(!isMuted());
-      syncMute();
+      syncAll();
       playTick();
     });
-    muteBtns.push(b);
+    toggles.push({
+      btn: b,
+      sync() {
+        const m = isMuted();
+        b.replaceChildren(icon(m ? 'sound-off' : 'sound'));
+        b.setAttribute('aria-label', m ? 'Sound off. Turn sound on' : 'Sound on. Turn sound off');
+        b.setAttribute('aria-pressed', String(m));
+      },
+    });
     return b;
   };
-  const syncMute = () => {
-    const m = isMuted();
-    for (const b of muteBtns) {
-      b.textContent = m ? '🔇' : '🔊';
-      b.setAttribute('aria-label', m ? 'Sound off. Turn sound on' : 'Sound on. Turn sound off');
-      b.setAttribute('aria-pressed', String(m));
-    }
-  };
-  startCard.append(muteButton('tw-mute-home'));
+
+  // ----- start -----
+  const start = el('div', 'tw-screen tw-start');
+  const startWrap = el('div', 'tw-start-wrap');
+  const startCard = el('div', 'tw-card tw-start-card');
+  startCard.append(el('div', 'tw-kicker', 'Casual arcade'));
   startCard.append(el('h1', 'tw-title', 'Territory Wars'));
   startCard.append(el('p', 'tw-tagline', 'Loop out, come home, claim the map.'));
   const bestBox = el('div', 'tw-best');
-  const bestLabel = el('div', 'tw-best-label', 'Best score');
-  const bestPct = el('div', 'tw-best-pct');
-  const bestMeta = el('div', 'tw-best-meta');
-  bestBox.append(bestLabel, bestPct, bestMeta);
+  const bestLabel = el('div', 'tw-best-label');
+  const bestLabelText = el('span');
+  bestLabel.append(icon('star'), bestLabelText);
+  const bestPct = el('div', 'tw-best-pct tw-num');
+  const bestSide = el('div', 'tw-best-side');
+  const bestKills = el('div', 'tw-best-kills');
+  const bestKillsText = el('span', 'tw-num');
+  bestKills.append(icon('flame'), bestKillsText);
+  const bestTime = el('div', 'tw-best-time tw-num');
+  bestSide.append(bestKills, bestTime);
+  const bestEmpty = el('div', 'tw-best-empty-text', 'No best yet — go claim some land!');
+  bestBox.append(bestLabel, bestPct, bestSide, bestEmpty);
   startCard.append(bestBox);
-  const nameLabel = el('label', 'tw-label', 'Your name');
+
   const nameInput = el('input', 'tw-input');
   nameInput.type = 'text';
   nameInput.maxLength = NAME_MAX;
   nameInput.autocomplete = 'off';
   nameInput.spellcheck = false;
   nameInput.id = 'tw-name';
-  nameLabel.htmlFor = 'tw-name';
-  const colorLabel = el('div', 'tw-label', 'Colour');
+  nameInput.enterKeyHint = 'go';
+  const nameField = el('div', 'tw-field');
+  nameField.append(icon('id', 'tw-field-icon'), nameInput);
+  startCard.append(labelRow('Your name', el('span', 'tw-label-aside', `max ${NAME_MAX} chars`), 'tw-name'), nameField);
+
+  const colorName = el('span', 'tw-label-aside tw-color-name');
   const swatches = el('div', 'tw-swatches');
   swatches.setAttribute('role', 'radiogroup');
   swatches.setAttribute('aria-label', 'Colour');
   const swatchBtns = PALETTE.players.map((c, i) => {
-    const b = el('button', 'tw-swatch');
-    b.type = 'button';
+    const b = button('tw-swatch');
     b.setAttribute('role', 'radio');
-    b.setAttribute('aria-label', `Colour ${i + 1}`);
+    b.setAttribute('aria-label', COLOR_NAMES[i] ?? `Colour ${i + 1}`);
     const dot = el('span', 'tw-swatch-dot');
-    dot.style.background = c.base;
-    dot.style.boxShadow = `0 3px 0 ${c.lip}`;
+    dot.style.setProperty('--c', c.base);
+    dot.style.setProperty('--lip', c.lip);
+    dot.append(icon('check', 'tw-swatch-check'));
     b.append(dot);
     swatches.append(b);
     return b;
   });
-  const playBtn = el('button', 'tw-btn tw-play', 'Play');
-  playBtn.type = 'button';
-  const hint = el('p', 'tw-hint',
-    'Drag anywhere (or use arrow keys / WASD) to steer. Leave your land and loop back to claim the area. ' +
-    'Cross a rival’s trail to knock them out — but guard your own.');
-  const diffLabel = el('div', 'tw-label', 'Difficulty');
+  startCard.append(labelRow('Colour', colorName), swatches);
+
   const diffGroup = el('div', 'tw-segments');
   diffGroup.setAttribute('role', 'radiogroup');
   diffGroup.setAttribute('aria-label', 'Difficulty');
   const diffBtns = DIFFICULTIES.map((d) => {
-    const b = el('button', 'tw-segment', DIFFICULTY_LABEL[d]);
-    b.type = 'button';
+    const b = button('tw-segment', DIFFICULTY_LABEL[d]);
     b.setAttribute('role', 'radio');
     diffGroup.append(b);
     return b;
   });
-  startCard.append(playBtn, nameLabel, nameInput, colorLabel, swatches, diffLabel, diffGroup, hint);
-  start.append(startCard);
+  startCard.append(labelRow('Difficulty'), diffGroup);
+
+  const playBtn = button('tw-btn tw-play');
+  playBtn.append(icon('play-fill'), el('span', undefined, 'Play'));
+  startCard.append(playBtn);
+  const recordsBtn = button('tw-btn tw-btn-secondary tw-records-btn');
+  recordsBtn.append(icon('chart'), el('span', undefined, 'Records'));
+  recordsBtn.setAttribute('aria-label', 'Records and settings');
+  startWrap.append(startCard, recordsBtn);
+  start.append(startWrap);
 
   let chosen = 0;
   let chosenDiff: Difficulty = 'normal';
@@ -256,13 +405,12 @@ export function createScreens(root: HTMLElement): Screens {
   const showBest = (best: BestScore | null) => {
     if (best) {
       setText(bestPct, formatPct(best.pct, 2));
-      setText(bestMeta, `${best.kills} ${best.kills === 1 ? 'kill' : 'kills'} · ${formatTime(best.time)} survived`);
-      bestBox.classList.remove('tw-best-empty');
+      setText(bestKillsText, `${best.kills} ${best.kills === 1 ? 'kill' : 'kills'}`);
+      setText(bestTime, `${formatTime(best.time)} survived`);
     } else {
       setText(bestPct, '—');
-      setText(bestMeta, 'No best yet. Go claim some land!');
-      bestBox.classList.add('tw-best-empty');
     }
+    bestBox.classList.toggle('tw-best-empty', !best);
   };
   const pickDiff = (d: Difficulty) => {
     chosenDiff = d;
@@ -271,24 +419,26 @@ export function createScreens(root: HTMLElement): Screens {
       b.setAttribute('aria-checked', String(on));
       b.tabIndex = on ? 0 : -1;
     });
-    setText(bestLabel, `Best score · ${DIFFICULTY_LABEL[d]}`);
+    setText(bestLabelText, `Best score · ${DIFFICULTY_LABEL[d]}`);
     showBest(bestForCb(d));
   };
   // Sound only on user picks, not when showStart restores the saved choice.
   const userPickDiff = (d: Difficulty) => { unlockAudio(); playSelect(d); pickDiff(d); };
   diffBtns.forEach((b, i) => b.addEventListener('click', () => userPickDiff(DIFFICULTIES[i])));
+  /** Arrow keys move a radiogroup's choice: +1 right/down, -1 left/up, 0 otherwise. */
+  const arrowStep = (e: KeyboardEvent) =>
+    e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
   diffGroup.addEventListener('keydown', (e) => {
-    const n = diffBtns.length;
-    let d = 0;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') d = 1;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') d = -1;
+    const d = arrowStep(e);
     if (!d) return;
     e.preventDefault();
+    const n = diffBtns.length;
     const i = (DIFFICULTIES.indexOf(chosenDiff) + d + n) % n;
     userPickDiff(DIFFICULTIES[i]);
     diffBtns[i].focus();
   });
   let onPlayCb: ((p: StartPrefs) => void) | null = null;
+  let onRecordsCb: ((p: StartPrefs) => void) | null = null;
   const pick = (i: number) => {
     chosen = i;
     swatchBtns.forEach((b, j) => {
@@ -296,38 +446,145 @@ export function createScreens(root: HTMLElement): Screens {
       b.tabIndex = j === i ? 0 : -1;
     });
     const c = PALETTE.players[i];
-    playBtn.style.background = c.base;
-    playBtn.style.boxShadow = `0 4px 0 ${c.lip}`;
+    setText(colorName, COLOR_NAMES[i] ?? '');
+    playBtn.style.setProperty('--btn', c.base);
+    playBtn.style.setProperty('--btn-lip', c.lip);
   };
   swatchBtns.forEach((b, i) => b.addEventListener('click', () => { unlockAudio(); playTick(); pick(i); }));
   swatches.addEventListener('keydown', (e) => {
-    const n = swatchBtns.length;
-    let d = 0;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') d = 1;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') d = -1;
+    const d = arrowStep(e);
     if (!d) return;
     e.preventDefault();
+    const n = swatchBtns.length;
     const i = (chosen + d + n) % n;
     pick(i);
     swatchBtns[i].focus();
   });
+  const currentPrefs = (): StartPrefs => ({ name: cleanName(nameInput.value), color: chosen, difficulty: chosenDiff });
   const submit = () => {
     if (!onPlayCb) return;
     const cb = onPlayCb;
-    onPlayCb = null; // one click = one game
-    cb({ name: cleanName(nameInput.value), color: chosen, difficulty: chosenDiff });
+    onPlayCb = onRecordsCb = null; // one click = one game
+    cb(currentPrefs());
   };
   playBtn.addEventListener('click', submit);
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  recordsBtn.addEventListener('click', () => {
+    if (!onRecordsCb) return;
+    const cb = onRecordsCb;
+    onPlayCb = onRecordsCb = null;
+    unlockAudio();
+    playTick();
+    cb(currentPrefs());
+  });
+
+  // ----- records & settings -----
+  const records = el('div', 'tw-screen tw-records');
+  records.setAttribute('role', 'region');
+  records.setAttribute('aria-labelledby', 'tw-records-title');
+  const recInner = el('div', 'tw-records-inner');
+  const recHead = el('header', 'tw-records-head');
+  const backBtn = button('tw-icon-btn tw-back');
+  backBtn.setAttribute('aria-label', 'Back to home');
+  backBtn.append(icon('back'));
+  const recTitles = el('div', 'tw-records-titles');
+  const recTitle = el('h2', 'tw-records-title', 'Records & Settings');
+  recTitle.id = 'tw-records-title';
+  recTitles.append(recTitle, el('div', 'tw-records-sub', 'Territory Wars'));
+  recHead.append(backBtn, recTitles);
+  const sectionHead = (name: IconName, text: string) => {
+    const h = el('h3', 'tw-section-head');
+    h.append(icon(name), el('span', undefined, text));
+    return h;
+  };
+  const bestList = el('div', 'tw-best-list');
+  const bestCards = DIFFICULTIES.map((d) => {
+    const card = el('section', 'tw-best-card');
+    card.dataset.difficulty = d;
+    card.setAttribute('aria-label', `${DIFFICULTY_LABEL[d]} personal best`);
+    const top = el('div', 'tw-best-card-top');
+    const highest = el('span', 'tw-highest');
+    highest.append(icon('trophy'), el('span', undefined, 'Highest best'));
+    top.append(el('span', 'tw-diff-chip', DIFFICULTY_LABEL[d]), highest);
+    const owned = el('div', 'tw-best-card-label', 'Territory owned');
+    const pctEl = el('div', 'tw-best-card-pct tw-num');
+    const tiles = el('div', 'tw-best-card-tiles');
+    const tile = (label: string) => {
+      const t = el('div', 'tw-mini-tile');
+      const v = el('div', 'tw-mini-value tw-num');
+      t.append(el('div', 'tw-mini-label', label), v);
+      tiles.append(t);
+      return v;
+    };
+    const kills = tile('Kills');
+    const time = tile('Survived');
+    const empty = el('p', 'tw-best-card-none', 'No best yet — go claim some land!');
+    card.append(top, owned, pctEl, tiles, empty);
+    bestList.append(card);
+    return { card, highest, pctEl, kills, time, empty };
+  });
+
+  const settingsList = el('div', 'tw-settings');
+  const settingRow = (name: IconName, label: string, get: () => boolean, set: (on: boolean) => void) => {
+    const b = button('tw-setting');
+    b.setAttribute('role', 'switch');
+    const knob = el('span', 'tw-switch');
+    knob.setAttribute('aria-hidden', 'true');
+    b.append(icon(name), el('span', 'tw-setting-label', label), knob);
+    b.addEventListener('click', () => { set(!get()); syncAll(); });
+    toggles.push({ btn: b, sync: () => b.setAttribute('aria-checked', String(get())) });
+    settingsList.append(b);
+  };
+  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); });
+  settingRow('vibrate', 'Vibration', isVibrationOn, (on) => setVibrationOn(on));
+  settingRow('motion-off', 'Reduced motion', () => reducedPref, (on) => {
+    reducedPref = on;
+    writeFlag(REDUCED_MOTION_KEY, on);
+    applyReduced();
+  });
+  const recFoot = el('footer', 'tw-records-foot');
+  recFoot.append(el('div', 'tw-foot-strong', 'Territory Wars · Ages 13+'), el('div', undefined, 'No in-app purchases'));
+  recInner.append(recHead, sectionHead('trophy', 'Personal bests'), bestList, sectionHead('gear', 'Settings'), settingsList, recFoot);
+  records.append(recInner);
+  let onBackCb: (() => void) | null = null;
+  const leaveRecords = () => {
+    const cb = onBackCb;
+    onBackCb = null;
+    cb?.();
+  };
+  backBtn.addEventListener('click', leaveRecords);
+  records.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); leaveRecords(); } });
 
   // ----- HUD -----
   const hud = el('div', 'tw-hud');
-  const stats = el('div', 'tw-stats');
-  const pctEl = el('div', 'tw-pct', '0.00%');
-  const killsEl = el('div', 'tw-kills', 'Kills 0');
-  stats.append(pctEl, killsEl);
+  const area = el('div', 'tw-area');
+  const areaHead = el('div', 'tw-area-head');
+  const areaDot = el('span', 'tw-dot');
+  areaHead.append(areaDot, el('span', undefined, 'My area'));
+  const pctEl = el('div', 'tw-pct tw-num');
+  const pctNum = el('span', undefined, '0.00');
+  pctEl.append(pctNum, el('span', 'tw-pct-sign', '%'));
+  const areaFoot = el('div', 'tw-area-foot');
+  const burnTag = el('span', 'tw-burn-tag');
+  burnTag.append(icon('alert'), el('span', undefined, 'Burning'));
+  burnTag.hidden = true;
+  const killsEl = el('span', 'tw-area-stat tw-num');
+  const killsNum = el('span', undefined, '0');
+  killsEl.append(icon('swords'), killsNum);
+  killsEl.setAttribute('aria-label', 'Kills');
+  const timeEl = el('span', 'tw-area-stat tw-num');
+  const timeNum = el('span', undefined, '0:00');
+  timeEl.append(icon('timer'), timeNum);
+  timeEl.setAttribute('aria-label', 'Time');
+  areaFoot.append(burnTag, killsEl, timeEl);
+  area.append(areaHead, pctEl, areaFoot);
+
+  const boardBox = el('div', 'tw-board-box');
+  const boardHead = el('div', 'tw-board-head');
+  boardHead.append(icon('trophy'), el('span', undefined, 'Leaderboard'));
   const board = el('ol', 'tw-board');
   board.setAttribute('aria-label', 'Leaderboard');
+  boardBox.append(boardHead, board);
   const pctTween = createPctTween(300);
   const rowEls: RowEls[] = [];
   for (let i = 0; i < 6; i++) {
@@ -335,40 +592,55 @@ export function createScreens(root: HTMLElement): Screens {
     const rank = el('span', 'tw-rank');
     const swatch = el('span', 'tw-row-swatch');
     const name = el('span', 'tw-row-name');
-    const p = el('span', 'tw-row-pct');
+    const p = el('span', 'tw-row-pct tw-num');
     r.append(rank, swatch, name, p);
     r.hidden = true;
     board.append(r);
     rowEls.push({ root: r, rank, swatch, name, pct: p, key: '' });
   }
+  const crown = icon('crown-fill', 'tw-crown');
+  crown.removeAttribute('aria-hidden');
+  crown.setAttribute('role', 'img');
+  crown.setAttribute('aria-label', '1');
+
+  const alerts = el('div', 'tw-alerts');
+  alerts.setAttribute('role', 'status');
+  const burnPill = el('div', 'tw-burn-pill');
+  burnPill.append(icon('flame'), el('span', undefined, 'Your trail is burning — get home!'), icon('flame'));
+  burnPill.hidden = true;
+  alerts.append(burnPill);
+  const shieldToast = el('div', 'tw-shield-toast');
+  shieldToast.append(icon('shield'), el('span', undefined, 'Revived! '), el('b', undefined, `Shield ${CONFIG.REVIVE_PROTECT_S}s`));
+  shieldToast.hidden = true;
+  shieldToast.setAttribute('role', 'status');
+
+  const steerHint = el('div', 'tw-steer-hint', 'Drag anywhere to steer');
+  const minimapWrap = el('div', 'tw-minimap-wrap');
   const minimap = el('canvas', 'tw-minimap');
   minimap.setAttribute('aria-label', 'Map of the whole arena');
   minimap.setAttribute('role', 'img');
-  hud.append(stats, board, minimap, muteButton('tw-mute-hud'));
-  syncMute();
+  minimapWrap.append(minimap, el('span', 'tw-minimap-label', 'Map'));
+  hud.append(area, boardBox, alerts, shieldToast, steerHint, minimapWrap, muteButton('tw-mute-hud'));
+  let hudColor = -1;
 
   // ----- game over -----
   const over = el('div', 'tw-screen tw-over');
-  const overCard = el('div', 'tw-card');
+  const overCard = el('div', 'tw-card tw-over-card');
+  const overDiff = el('div', 'tw-diff-chip');
   const overTitle = el('h2', 'tw-over-title');
-  const overDiff = el('div', 'tw-diff-tag');
-  const newBestEl = el('div', 'tw-new-best', 'New best!');
-  const overStats = el('div', 'tw-over-stats');
-  const stat = (label: string) => {
-    const box = el('div', 'tw-stat');
-    const v = el('div', 'tw-stat-value');
-    box.append(v, el('div', 'tw-stat-label', label));
-    overStats.append(box);
-    return v;
-  };
-  const overPct = stat('Territory');
-  const overKills = stat('Kills');
-  const overTime = stat('Survived');
-  const againBtn = el('button', 'tw-btn tw-again', 'Play again');
-  againBtn.type = 'button';
-  const homeBtn = el('button', 'tw-btn tw-home', 'Home');
-  homeBtn.type = 'button';
-  overCard.append(overTitle, overDiff, newBestEl, overStats, againBtn, homeBtn);
+  const newBestEl = el('div', 'tw-new-best');
+  newBestEl.append(icon('star'), el('span', undefined, 'New best!'));
+  const overBig = el('div', 'tw-over-big');
+  const overPct = el('div', 'tw-over-pct tw-num');
+  overBig.append(overPct, el('div', 'tw-over-pct-label', 'Territory owned'));
+  const overStats = el('div', 'tw-tiles');
+  const overKills = statTile(overStats, 'swords', 'Kills').value;
+  const overTime = statTile(overStats, 'timer', 'Survived').value;
+  const overBest = statTile(overStats, null, 'Best');
+  const againBtn = button('tw-btn tw-again');
+  againBtn.append(icon('play-fill'), el('span', undefined, 'Play again'));
+  const homeBtn = button('tw-btn tw-btn-secondary tw-home', 'Home');
+  overCard.append(overDiff, overTitle, newBestEl, overBig, overStats, againBtn, homeBtn);
   over.append(overCard);
   let onAgainCb: (() => void) | null = null;
   let onHomeCb: (() => void) | null = null;
@@ -381,27 +653,22 @@ export function createScreens(root: HTMLElement): Screens {
   homeBtn.addEventListener('click', () => leaveOver('home'));
 
   // ----- revive -----
-  const SVG_NS = 'http://www.w3.org/2000/svg';
-  const svg = (tag: string, attrs: Record<string, string>) => {
-    const e = document.createElementNS(SVG_NS, tag);
-    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
-    return e;
-  };
   const revive = el('div', 'tw-screen tw-revive');
   revive.setAttribute('role', 'dialog');
   revive.setAttribute('aria-modal', 'true');
   revive.setAttribute('aria-labelledby', 'tw-revive-title');
   const reviveCard = el('div', 'tw-card tw-revive-card');
-  const closeBtn = el('button', 'tw-revive-close', '✕');
-  closeBtn.type = 'button';
+  const closeBtn = button('tw-icon-btn tw-revive-close');
+  closeBtn.append(icon('close'));
   closeBtn.setAttribute('aria-label', 'Close and view results');
   const pill = el('div', 'tw-ko-pill');
-  pill.append(el('span', 'tw-ko-icon', '!'), document.createTextNode('Knocked out!'));
+  pill.append(icon('x-circle'), el('span', undefined, 'Knocked out!'));
   const reviveTitle = el('h2', 'tw-revive-title', 'Knocked out!');
   reviveTitle.id = 'tw-revive-title';
   const reviveSub = el('p', 'tw-revive-sub');
   const ring = el('div', 'tw-ring');
   ring.setAttribute('role', 'timer');
+  ring.setAttribute('aria-label', 'Seconds left to revive');
   const RING_R = 44;
   const RING_C = 2 * Math.PI * RING_R;
   const ringSvg = svg('svg', { viewBox: '0 0 100 100', 'aria-hidden': 'true' });
@@ -411,31 +678,24 @@ export function createScreens(root: HTMLElement): Screens {
     'stroke-dasharray': RING_C.toFixed(2), transform: 'rotate(-90 50 50)',
   });
   ringSvg.append(ringArc);
-  const ringNum = el('div', 'tw-ring-num', '5');
+  const ringNum = el('div', 'tw-ring-num tw-num', '5');
   ring.append(ringSvg, ringNum, el('div', 'tw-ring-sec', 'SEC'));
-  const reviveStats = el('div', 'tw-revive-stats');
-  const rstat = (label: string) => {
-    const box = el('div', 'tw-revive-stat');
-    const v = el('div', 'tw-revive-stat-value');
-    const l = el('div', 'tw-revive-stat-label', label);
-    box.append(l, v);
-    reviveStats.append(box);
-    return { label: l, value: v };
-  };
-  const rBest = rstat('Best');
-  const rKills = rstat('Kills').value;
-  const rTime = rstat('Time').value;
-  const reviveBtn = el('button', 'tw-btn tw-revive-btn');
-  reviveBtn.type = 'button';
-  const reviveIcon = svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true', class: 'tw-revive-icon' });
-  reviveIcon.append(svg('path', {
-    d: 'M12 21s-7.5-4.6-9.3-9.2C1.4 8.4 3.6 5 7 5c2 0 3.4 1.1 5 3 1.6-1.9 3-3 5-3 3.4 0 5.6 3.4 4.3 6.8C19.5 16.4 12 21 12 21z',
-  }));
-  reviveBtn.append(reviveIcon, document.createTextNode('Revive'));
-  const reviveCaption = el('p', 'tw-revive-caption', 'Keep 100% of your territory · once per round');
-  const noThanks = el('button', 'tw-link', 'No thanks, view results');
-  noThanks.type = 'button';
+  const reviveStats = el('div', 'tw-tiles');
+  const rBest = statTile(reviveStats, null, 'Best');
+  const rKills = statTile(reviveStats, 'swords', 'Kills').value;
+  const rTime = statTile(reviveStats, 'timer', 'Time').value;
+  const reviveBtn = button('tw-btn tw-revive-btn');
+  reviveBtn.append(icon('video', 'tw-revive-icon'), el('span', undefined, 'Revive'));
+  // In the app the revive costs a rewarded ad; in a browser it is free, so no ad tag there.
+  const reviveCaption = el('p', 'tw-revive-caption');
+  if (isNative) {
+    reviveCaption.append(el('span', 'tw-ad-tag', 'AD'), document.createTextNode(' Watch a short ad · '));
+    reviveBtn.setAttribute('aria-label', 'Revive: watch a short ad');
+  }
+  reviveCaption.append(document.createTextNode(`Keep 100% of your territory · ${CONFIG.REVIVE_PROTECT_S}s shield`));
+  const noThanks = button('tw-link', 'No thanks, view results');
   reviveCard.append(closeBtn, pill, reviveTitle, reviveSub, ring, reviveStats, reviveBtn, reviveCaption, noThanks);
+  if (!isNative) reviveCard.append(el('p', 'tw-keys-hint', 'Enter to revive · Esc to skip'));
   revive.append(reviveCard);
   revive.hidden = true;
 
@@ -523,48 +783,90 @@ export function createScreens(root: HTMLElement): Screens {
   noThanks.addEventListener('click', giveUp);
   closeBtn.addEventListener('click', giveUp);
 
-  root.append(hud, start, over, revive);
-  const all = [start, hud, over];
+  root.append(hud, start, records, over, revive);
+  const all = [start, records, hud, over];
   const only = (shown: HTMLElement) => {
     for (const e of all) e.hidden = e !== shown;
     if (offer) closeRevive();
   };
+  syncAll();
   only(start);
 
   return {
     minimap,
-    showStart(prefs, bestFor, onPlay) {
+    showStart(prefs, bestFor, onPlay, onRecords) {
       bestForCb = bestFor;
       pickDiff(prefs.difficulty);
       nameInput.value = prefs.name;
       pick(((prefs.color % swatchBtns.length) + swatchBtns.length) % swatchBtns.length);
       onPlayCb = onPlay;
+      onRecordsCb = onRecords;
       only(start);
+      swatchBtns[chosen].scrollIntoView?.({ block: 'nearest', inline: 'center' });
+      start.scrollTop = 0;
       playBtn.focus({ preventScroll: true });
+    },
+    showRecords(bestFor, onBack) {
+      const bests: Partial<Record<Difficulty, BestScore | null>> = {};
+      for (const d of DIFFICULTIES) bests[d] = bestFor(d);
+      const top = highestBest(bests);
+      DIFFICULTIES.forEach((d, i) => {
+        const b = bests[d] ?? null;
+        const c = bestCards[i];
+        c.card.classList.toggle('tw-best-card-empty', !b);
+        c.highest.hidden = top !== d;
+        setText(c.pctEl, b ? formatPct(b.pct, 1) : '—');
+        setText(c.kills, b ? String(b.kills) : '—');
+        setText(c.time, b ? formatTime(b.time) : '—');
+      });
+      syncAll();
+      onBackCb = onBack;
+      only(records);
+      records.scrollTop = 0;
+      backBtn.focus({ preventScroll: true });
     },
     showHud() {
       for (const r of rowEls) { r.root.hidden = true; r.key = ''; }
       pctTween.snap(0);
-      setText(pctEl, '0.00%');
-      setText(killsEl, 'Kills 0');
+      setText(pctNum, '0.00');
+      setText(killsNum, '0');
+      setText(timeNum, '0:00');
+      burnPill.hidden = shieldToast.hidden = burnTag.hidden = true;
+      area.classList.remove('tw-burning');
+      steerHint.classList.remove('tw-gone');
+      hudColor = -1;
+      syncAll();
       only(hud);
     },
     tickHud(now) {
-      setText(pctEl, formatPct(pctTween.value(now), 2));
+      setText(pctNum, Math.max(0, pctTween.value(now)).toFixed(2));
       return pctTween.active(now);
     },
     updateHud(world, now) {
       const human = world.players[world.humanId];
-      pctTween.set(pct(world, human.id), now);
-      setText(pctEl, formatPct(pctTween.value(now), 2));
-      setText(killsEl, `Kills ${human.kills}`);
+      const p = pct(world, human.id);
+      if (reduceMotion()) pctTween.snap(p);
+      else pctTween.set(p, now);
+      setText(pctNum, Math.max(0, pctTween.value(now)).toFixed(2));
+      setText(killsNum, String(human.kills));
+      setText(timeNum, formatTime(world.time));
+      if (hudColor !== human.colorIndex) {
+        hudColor = human.colorIndex;
+        areaDot.style.background = PALETTE.players[hudColor % PALETTE.players.length].base;
+      }
+      const a = hudAlerts(human, world.time);
+      burnPill.hidden = burnTag.hidden = !a.burning;
+      area.classList.toggle('tw-burning', a.burning);
+      shieldToast.hidden = !a.shielded;
+      steerHint.classList.toggle('tw-gone', world.time > HINT_SECONDS);
       const rows = buildLeaderboard(boardEntries(world));
       rowEls.forEach((r, i) => {
         const row = rows[i];
         if (!row) { r.root.hidden = true; return; }
         r.root.hidden = false;
-        setText(r.rank, row.leader ? '★' : `${row.rank}.`);
-        setText(r.name, row.name);
+        if (row.leader) { if (crown.parentElement !== r.rank) r.rank.replaceChildren(crown); }
+        else setText(r.rank, String(row.rank));
+        setText(r.name, row.isHuman ? 'You' : row.name);
         setText(r.pct, formatPct(row.pct, 1));
         const key = `${row.colorIndex}|${row.isHuman}|${row.leader}`;
         if (r.key !== key) {
@@ -585,6 +887,8 @@ export function createScreens(root: HTMLElement): Screens {
       setText(overPct, formatPct(s.pct, 2));
       setText(overKills, String(s.kills));
       setText(overTime, formatTime(s.time));
+      setText(overBest.label, `Best · ${DIFFICULTY_SHORT[s.difficulty]}`);
+      setText(overBest.value, s.best ? formatPct(s.best.pct, 1) : '—');
       onAgainCb = onAgain;
       onHomeCb = onHome;
       only(over);
@@ -595,7 +899,7 @@ export function createScreens(root: HTMLElement): Screens {
       const sub = reviveSubtitle(info.cause, info.killerName);
       reviveSub.replaceChildren(document.createTextNode(sub.pre));
       if (sub.name) reviveSub.append(el('b', undefined, sub.name), document.createTextNode(sub.post));
-      setText(rBest.label, `Best · ${DIFFICULTY_LABEL[info.difficulty]}`);
+      setText(rBest.label, `Best · ${DIFFICULTY_SHORT[info.difficulty]}`);
       setText(rBest.value, info.best ? formatPct(info.best.pct, 1) : '—');
       setText(rKills, String(info.kills));
       setText(rTime, formatTime(info.time));

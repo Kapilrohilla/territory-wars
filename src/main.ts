@@ -41,7 +41,7 @@ function savePrefs(p: StartPrefs): void {
 // start → playing → over → start. Each game gets a fresh, one-shot session;
 // the previous one stays painted behind the start screen until replaced.
 let session: Session | null = null;
-let screen: 'home' | 'playing' | 'over' = 'home';
+let screen: 'home' | 'records' | 'playing' | 'over' = 'home';
 let hudTimer: ReturnType<typeof setInterval> | null = null;
 let hudFrame: number | null = null;
 
@@ -71,7 +71,15 @@ function toStart(): void {
     unlockAudio(); // inside the click gesture
     savePrefs(prefs);
     play(prefs);
+  }, (prefs) => {
+    savePrefs(prefs); // keep the picks for the way back
+    toRecords();
   });
+}
+
+function toRecords(): void {
+  screen = 'records';
+  ui.showRecords(loadBest, toStart);
 }
 
 function play(prefs: StartPrefs): void {
@@ -107,7 +115,8 @@ function play(prefs: StartPrefs): void {
       const run = { pct: s.finalPct(), kills: human.kills, time: world.time };
       const newBest = recordRun(run, prefs.difficulty);
       if (newBest) setTimeout(() => playSound('newBest'), 450);
-      ui.showOver({ ...run, won: world.won, newBest, difficulty: prefs.difficulty }, () => {
+      const best = loadBest(prefs.difficulty);
+      ui.showOver({ ...run, won: world.won, newBest, difficulty: prefs.difficulty, best }, () => {
         unlockAudio();
         play(prefs);
       }, toStart);
@@ -126,9 +135,9 @@ function play(prefs: StartPrefs): void {
 toStart();
 
 void initApp({
-  // Back: results → home; ignored mid-game; on home it quits the app.
+  // Back: results or records → home; ignored mid-game; on home it quits the app.
   onBack: () => {
-    if (screen === 'over') { toStart(); return true; }
+    if (screen === 'over' || screen === 'records') { toStart(); return true; }
     return screen === 'playing';
   },
   onResume: unlockAudio,

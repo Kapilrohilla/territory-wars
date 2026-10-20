@@ -7,8 +7,27 @@ import { Capacitor } from '@capacitor/core';
  */
 export const isNative = Capacitor.isNativePlatform();
 
+const VIBRATION_KEY = 'territory-wars.vibration';
+
+function loadVibration(): boolean {
+  try { return globalThis.localStorage?.getItem(VIBRATION_KEY) !== '0'; } catch { return true; }
+}
+
+let vibrationOn = loadVibration();
+
+/** The Vibration setting (on by default); `vibrate` does nothing while it is off. */
+export function isVibrationOn(): boolean {
+  return vibrationOn;
+}
+
+export function setVibrationOn(on: boolean): void {
+  vibrationOn = on;
+  try { globalThis.localStorage?.setItem(VIBRATION_KEY, on ? '1' : '0'); } catch { /* storage unavailable */ }
+}
+
 /** Short buzz: the Haptics plugin in the app, navigator.vibrate in a browser. */
 export function vibrate(ms: number): void {
+  if (!vibrationOn) return;
   if (isNative) {
     void import('@capacitor/haptics')
       .then(({ Haptics }) => Haptics.vibrate({ duration: ms }))
