@@ -8,12 +8,18 @@ import { createInput } from './input';
 import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
 import { drawMinimap } from './minimap';
+import { createSfxState, soundsFor } from './sfxEvents';
+import { playSound } from './sound';
 import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
+import { createMoodState, moodEvents, moodOf } from './moods';
+import { botSkin, faceFor, skinById } from './skins';
 
 export type SessionOpts = {
   seed?: number;
   humanName?: string;
   humanColor?: number;
+  /** The human's skin id (see skins.ts); it sets the colour too, overriding humanColor. */
+  humanSkin?: string;
   difficulty?: Difficulty;
   /**
    * Called once, OVER_TAIL_MS after world.over becomes true (effects such as
@@ -51,6 +57,11 @@ export type Session = {
   revive(): Promise<boolean>;
   /** Declines the revive: the game ends and onOver follows after the usual tail. */
   giveUp(): void;
+  /** Freezes a running round (not while knocked out or over). Returns true if it paused. */
+  pause(): boolean;
+  /** Resumes after pause(). */
+  resume(): void;
+  readonly paused: boolean;
 };
 
 /** How long the game keeps rendering after it ends, before onOver. */
@@ -65,7 +76,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const world = createWorld({
     seed,
     humanName: opts.humanName ?? 'You',
-    humanColor: opts.humanColor ?? 0,
+    humanColor: opts.humanSkin !== undefined ? skinById(opts.humanSkin).color : opts.humanColor ?? 0,
     difficulty: opts.difficulty ?? 'normal',
   });
   const brains = createBrains(world);
@@ -76,6 +87,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   let miniSize = 0;
   const camera = createCamera();
   const fx = createFx();
+  const moods = createMoodState();
+  const humanSkin = skinById(opts.humanSkin);
+  const skins = world.players.map((p) => (p.isHuman ? humanSkin : botSkin(p.id, p.colorIndex, seed)));
+  fx.faceOf = (p) => faceFor(skins[p.id] ?? humanSkin, moodOf(p, world, moods));
   const effects = createEffects();
   const input = createInput(canvas);
   let inputDisposed = false;
@@ -121,9 +136,15 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   let overNotified = false;
   let finalPct = 0;
 
+  const sfx = createSfxState();
   const notifyEvents = () => {
     // world.events only holds the latest step's (or revive call's) events.
-    if (world.events.length) effects.onEvents(world.events, world, camera);
+    if (world.events.length) {
+      effects.onEvents(world.events, world, camera);
+      moodEvents(world.events, world, moods);
+    }
+    // Every step, even a silent one: the revive shield's end is a state edge, not an event.
+    for (const cue of soundsFor(world.events, world, sfx)) playSound(cue.name, cue);
   };
   const recordFinalPct = () => {
     const h = world.players[world.humanId];
@@ -197,14 +218,29 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   }
 
   let disposed = false;
+  let paused = false;
   return {
+    get paused() { return paused; },
+    pause() {
+      if (disposed || paused || !running || world.over || world.awaitingRevive) return false;
+      paused = true;
+      stop();
+      return true;
+    },
+    resume() {
+      if (disposed || !paused) return;
+      paused = false;
+      running = true;
+      lastFrame = null;
+      loop.start();
+    },
     world,
     camera,
     fx,
     effects,
     finalPct: () => finalPct,
     start() {
-      if (disposed || running || overNotified) return;
+      if (disposed || running || overNotified || paused) return;
       running = true;
       lastFrame = null;
       loop.start();
@@ -227,6 +263,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
         return false;
       }
       reviveHuman(world);
+      notifyEvents(); // no events, but the shield going up plays the power-up
       snapshotFx(fx, world);
       lastFrame = null;
       return true;

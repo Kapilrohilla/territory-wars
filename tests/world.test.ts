@@ -152,6 +152,20 @@ describe('world', () => {
     expect(JSON.parse(JSON.stringify(w))).toEqual(w);
   });
 
+  it('a trail cut emits one cut event naming hitter and victim', () => {
+    const w = soloWorld();
+    const b = placeBot(w, v(5, 6), Math.PI / 2);
+    b.trail = [v(5, -5), v(5, 5)];
+    let cuts: unknown[] = [];
+    for (let i = 0; i < 60 && !b.burn; i++) {
+      step(w, NO_INPUT);
+      cuts = w.events.filter((e) => e.type === 'cut');
+    }
+    expect(cuts).toEqual([{ type: 'cut', hitterId: 0, victimId: b.id }]);
+    step(w, NO_INPUT); // already burning: no second cut
+    expect(w.events.some((e) => e.type === 'cut')).toBe(false);
+  });
+
   it('burn reaches head kills victim and credits killer', () => {
     const w = soloWorld();
     const b = placeBot(w, v(5, 6), Math.PI / 2);
@@ -366,6 +380,67 @@ describe('world', () => {
     expect(h.kills).toBe(1);
     const ev = w.events.find((e) => e.type === 'capture');
     expect(ev && ev.type === 'capture' && ev.gainedPct).toBeGreaterThan(0);
+  });
+
+  describe('capture event data', () => {
+    /** The human closes a loop over [0, 8]² (see the capture tests above); returns its events. */
+    function closeLoop(w: World): World['events'] {
+      const h = w.players[0];
+      h.trail = [v(2.5, 0), v(8, 0), v(8, 8), v(0, 8), v(0, 3.2)];
+      h.pos = v(0, 3.2);
+      h.prevPos = v(0, 3.4);
+      h.heading = -Math.PI / 2;
+      h.targetHeading = -Math.PI / 2;
+      for (let i = 0; i < 5; i++) {
+        step(w, NO_INPUT);
+        if (w.events.some((e) => e.type === 'capture')) return w.events;
+      }
+      throw new Error('no capture');
+    }
+    const captureOf = (events: World['events']) => {
+      const e = events.find((x) => x.type === 'capture');
+      if (!e || e.type !== 'capture') throw new Error('no capture');
+      return e;
+    };
+
+    it('stolen is empty for a capture of empty ground', () => {
+      const w = soloWorld();
+      expect(captureOf(closeLoop(w)).stolen).toEqual([]);
+    });
+
+    it('stolen lists the share of the arena taken from each rival', () => {
+      const w = soloWorld();
+      // Bot 1's land straddles the loop's far corner; its head sits on the part that stays.
+      const b = placeBot(w, v(11, 11), 0, v(9, 9), 3);
+      const had = landArea(b.land);
+      const ev = captureOf(closeLoop(w));
+      expect(b.alive).toBe(true);
+      const lost = ((had - landArea(b.land)) / (Math.PI * CONFIG.ARENA_R ** 2)) * 100;
+      expect(lost).toBeGreaterThan(0);
+      expect(ev.stolen).toHaveLength(1);
+      expect(ev.stolen[0].playerId).toBe(1);
+      expect(ev.stolen[0].pct).toBeCloseTo(lost, 9);
+      expect(JSON.parse(JSON.stringify(w))).toEqual(w);
+    });
+
+    it('a burning player that gets home emits escape after its capture', () => {
+      const w = soloWorld();
+      const h = w.players[0];
+      const b = placeBot(w, v(-40, -30), 0);
+      h.burn = { s0: 1, back: 1, front: 1, killerId: b.id, killerDeaths: b.deaths };
+      const events = closeLoop(w);
+      expect(h.alive).toBe(true);
+      expect(h.burn).toBeNull();
+      const iCap = events.findIndex((e) => e.type === 'capture');
+      const iEsc = events.findIndex((e) => e.type === 'escape');
+      expect(events[iEsc]).toEqual({ type: 'escape', playerId: 0 });
+      expect(iEsc).toBeGreaterThan(iCap);
+    });
+
+    it('no escape event for a capture without a burn', () => {
+      const w = soloWorld();
+      expect(closeLoop(w).some((e) => e.type === 'escape')).toBe(false);
+    });
   });
 
   it('enemy on capturer old land survives a capture elsewhere; enemy in new region dies', () => {
