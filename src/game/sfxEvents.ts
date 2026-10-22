@@ -71,6 +71,13 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
           if (e.stolen.length > 0) stole = true;
         }
         break;
+      case 'absorb':
+        // Taking a victim's land sounds like stealing it.
+        if (e.playerId === human && e.gainedPct > 0) {
+          capturePct += e.gainedPct;
+          stole = true;
+        }
+        break;
       case 'escape':
         if (e.playerId === human) add({ name: 'escape' });
         break;

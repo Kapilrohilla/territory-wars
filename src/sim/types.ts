@@ -1,4 +1,4 @@
-import type { Difficulty } from './config';
+import type { Difficulty, SelfCross } from './config';
 import type { MultiPoly, Vec } from './geometry';
 
 /** null keeps the current target. */
@@ -60,6 +60,8 @@ export type GameEvent =
   /** A burning player got back to its own land: the burn is cancelled. */
   | { type: 'escape'; playerId: number }
   | { type: 'death'; playerId: number; killerId: number | null; cause: DeathCause }
+  /** `playerId` killed `victimId` and took its land (`region`, worth `gainedPct` of the arena). */
+  | { type: 'absorb'; playerId: number; victimId: number; gainedPct: number; region: MultiPoly }
   /** The human was knocked out but may still be revived (the world is frozen meanwhile). */
   | { type: 'down'; playerId: number; killerId: number | null; cause: DeathCause }
   /** `hitterId` crossed `victimId`'s trail, which starts burning toward its owner. */
@@ -76,6 +78,8 @@ export type World = {
   won: boolean;
   seed: number;
   difficulty: Difficulty;
+  /** The human's own-trail rule (bots always die on their own trail). */
+  selfCross: SelfCross;
   /** mulberry32 state; advanced by every world-owned random draw. */
   rngState: number;
   /** Revives the human has left this round. */

@@ -30,6 +30,10 @@ export const CONFIG = {
   ZOOM_FULL_PCT: 50,
 } as const;
 
+/** What happens when the human's head crosses its own trail: knocked out, or nothing. */
+export type SelfCross = 'die' | 'pass';
+export const SELF_CROSS_MODES: readonly SelfCross[] = ['die', 'pass'];
+
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export const DIFFICULTIES: readonly Difficulty[] = ['easy', 'normal', 'hard'];
 

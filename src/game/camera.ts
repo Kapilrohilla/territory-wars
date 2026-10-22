@@ -19,7 +19,8 @@ export type Camera = {
 };
 
 const FOLLOW_RATE = 8;
-const ZOOM_RATE = 3;
+/** Settles a zoom change in about half a second. */
+const ZOOM_RATE = 5;
 const NUDGE_DECAY = 7;
 const NUDGE_ZOOM = 0.08;
 

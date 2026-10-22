@@ -1,9 +1,9 @@
-import { CONFIG, DIFFICULTY, type Difficulty } from './config';
+import { CONFIG, DIFFICULTY, type Difficulty, type SelfCross } from './config';
 import {
   type MultiPoly, type Vec,
   angleDiff, circleRing, clampToCircle, distPointSeg, segIntersect,
 } from './geometry';
-import { captureLand, keepPiece, landArea, landContains, subtractLand } from './territory';
+import { captureLand, cutLand, landArea, landContains, mergeLand, subtractLand } from './territory';
 import { mulberryNext } from './rng';
 import { NAMES } from './names';
 import type { Credit, DeathCause, GameEvent, Input, Player, Stolen, World } from './types';
@@ -119,11 +119,11 @@ function newPlayer(id: number, name: string, colorIndex: number, isHuman: boolea
 }
 
 export function createWorld(opts: {
-  seed: number; humanName: string; humanColor: number; difficulty?: Difficulty;
+  seed: number; humanName: string; humanColor: number; difficulty?: Difficulty; selfCross?: SelfCross;
 }): World {
   const world: World = {
     time: 0, players: [], humanId: 0, events: [], over: false, won: false,
-    seed: opts.seed, difficulty: opts.difficulty ?? 'normal', rngState: opts.seed >>> 0,
+    seed: opts.seed, difficulty: opts.difficulty ?? 'normal', selfCross: opts.selfCross ?? 'die', rngState: opts.seed >>> 0,
     revivesLeft: 1, awaitingRevive: false, downKillerId: null, downCause: null,
   };
   const rng = worldRng(world);
@@ -206,7 +206,7 @@ function capture(world: World, p: Player, pending: Pending) {
     if (landContains(region, q.pos)) markDead(pending, q.id, p.id, 'captured');
     if (q.land.length === 0 || !boxesOverlap(box, bbox(q.land))) continue;
     const had = landArea(q.land);
-    q.land = keepPiece(subtractLand(q.land, newLand), q.pos);
+    q.land = cutLand(q.land, newLand, q.pos);
     const lost = ((had - landArea(q.land)) / ARENA_AREA) * 100;
     if (lost > STOLEN_EPS_PCT) stolen.push({ playerId: q.id, pct: lost });
     if (q.land.length === 0) {
@@ -350,7 +350,8 @@ function resolveCollisions(world: World, alive: Player[], pending: Pending) {
   for (const a of alive) {
     for (const b of alive) {
       if (a === b) {
-        if (hitsOwnTrail(a)) markDead(pending, a.id, a.id, 'self');
+        const passes = a.isHuman && world.selfCross === 'pass';
+        if (!passes && hitsOwnTrail(a)) markDead(pending, a.id, a.id, 'self');
         continue;
       }
       // A rival trail hit doesn't kill outright: it sets the trail burning from the hit point.
@@ -388,11 +389,28 @@ function killLandless(world: World, alive: Player[], pending: Pending) {
 }
 
 /**
+ * The killer takes the victim's land (its dyingLand, which then doesn't sink away). Only a
+ * killer still alive takes it; otherwise the land falls neutral as before.
+ */
+function absorbLand(world: World, victim: Player, killerId: number | null): void {
+  const land = victim.dyingLand;
+  if (killerId === null || killerId === victim.id || !land || land.length === 0) return;
+  const k = world.players[killerId];
+  if (!k.alive) return;
+  const before = pct(world, k.id);
+  k.land = mergeLand(k.land, land);
+  victim.dyingLand = null;
+  world.events.push({ type: 'absorb', playerId: k.id, victimId: victim.id, gainedPct: pct(world, k.id) - before, region: land });
+}
+
+/**
  * Kills every pending victim (protected players are spared). The human's first death is a
  * "down" instead: the land moves to dyingLand as usual and the killer is credited now, but
- * the world freezes (awaitingRevive) until reviveHuman or declineRevive.
+ * the world freezes (awaitingRevive) until reviveHuman or declineRevive. Once every death
+ * is in, each killer still alive takes its victims' land (a down keeps it until declined).
  */
 function applyDeaths(world: World, pending: Pending) {
+  const absorbs: [Player, number | null][] = [];
   for (const [id, { killerId, cause }] of pending) {
     const p = world.players[id];
     if (!p.alive || isProtected(world, p)) continue;
@@ -413,8 +431,10 @@ function applyDeaths(world: World, pending: Pending) {
       world.events.push({ type: 'down', playerId: id, killerId, cause });
     } else {
       world.events.push({ type: 'death', playerId: id, killerId, cause });
+      absorbs.push([p, killerId]);
     }
   }
+  for (const [victim, killerId] of absorbs) absorbLand(world, victim, killerId);
 }
 
 function housekeeping(world: World) {
@@ -540,9 +560,9 @@ export function declineRevive(world: World): void {
   const h = world.players[world.humanId];
   world.awaitingRevive = false;
   world.over = true;
-  // Kill credit was given at the down; this death is the final one (effects shrink the land).
-  world.events = [
-    { type: 'death', playerId: h.id, killerId: world.downKillerId, cause: world.downCause ?? 'self' },
-    { type: 'gameover' },
-  ];
+  // Kill credit was given at the down; this death is the final one: the killer takes the
+  // land (nothing moved while frozen, so it overlaps no one), else effects sink it.
+  world.events = [{ type: 'death', playerId: h.id, killerId: world.downKillerId, cause: world.downCause ?? 'self' }];
+  absorbLand(world, h, world.downKillerId);
+  world.events.push({ type: 'gameover' });
 }

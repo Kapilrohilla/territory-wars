@@ -710,6 +710,7 @@ button:focus-visible,
   background: rgba(52, 50, 63, 0.42);
 }
 .tw-revive-card { padding: 26px 22px 18px; }
+.tw-revive.tw-arming .tw-revive-card { pointer-events: none; }
 .tw-revive-close {
   position: absolute;
   top: 14px;
@@ -1071,6 +1072,21 @@ button:focus-visible,
 .tw-privacy-text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .tw-privacy-sub { font: 600 14px var(--font-body); color: var(--ink-muted); }
 .tw-setting .tw-chevron { width: 20px; height: 20px; color: var(--ink-muted); }
+/* A multi-option setting: the current value on the right; the invisible native select on top. */
+.tw-setting-choice { position: relative; box-sizing: border-box; cursor: pointer; }
+.tw-choice-value { font: 800 15px var(--font-display); color: var(--ink-muted); white-space: nowrap; }
+.tw-setting-choice[data-value="die"] .tw-choice-value { color: var(--danger); }
+.tw-setting-choice[data-value="pass"] .tw-choice-value { color: var(--revive-lip); }
+.tw-choice {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 16px; /* iOS zooms into selects under 16px */
+}
+.tw-setting-choice:focus-within { box-shadow: inset 0 0 0 3px var(--ink); }
 .tw-row-off { cursor: default; }
 .tw-row-off .tw-chevron { display: none; }
 
@@ -1261,14 +1277,17 @@ button:focus-visible,
 /* The ad SDK draws over this box; it must stay at least 120×120. */
 .tw-native-slot { min-height: 128px; border-radius: 20px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--line); }
 
-@media (max-width: 420px) {
-  /* No room between the HUD cards: the pause button sits under the area card. */
+/* Centred, the pause button needs ~500px: area card (≤200) + button + the 200px leaderboard.
+   Narrower, it sits under the area card, and the alerts drop below the leaderboard. */
+@media (max-width: 560px) {
   .tw-pause-btn {
     left: max(12px, env(safe-area-inset-left));
     top: calc(var(--hud-top) + 112px);
-    width: 48px;
-    height: 48px;
     transform: none;
   }
   .tw-area.tw-burning ~ .tw-pause-btn { top: calc(var(--hud-top) + 140px); }
+  .tw-alerts { top: calc(var(--hud-top) + 196px); }
+}
+@media (max-width: 420px) {
+  .tw-pause-btn { width: 48px; height: 48px; }
 }

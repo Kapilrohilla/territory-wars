@@ -2,7 +2,7 @@ import { CONFIG } from '../sim/config';
 import { angleDiff, type MultiPoly, type Vec } from '../sim/geometry';
 import type { Player, World } from '../sim/types';
 import type { Camera } from './camera';
-import type { Effects } from './effects';
+import { SPAWN_HEIGHT, type Effects, type HeadPose } from './effects';
 import { drawFace, drawFaceBack } from './faces';
 import type { Face } from './skins';
 import { PALETTE } from './palette';
@@ -45,9 +45,36 @@ function interpHeading(fx: Fx, p: Player, alpha: number): number {
   return prev + angleDiff(p.heading, prev) * alpha;
 }
 
+/** Largest corner rounding (world units) when drawing land outlines. */
+export const CORNER_R = 0.6;
+
+/**
+ * Where each corner of a ring is rounded: the curve leaves the edge before the corner at
+ * `a` and joins the next edge at `b`, with the corner itself as the control point. Each cut
+ * is at most CORNER_R and at most half of either neighbouring edge, so a fine polygon (a
+ * start circle) draws as a smooth circle while long straight edges stay straight.
+ */
+export function roundedCorners(ring: Vec[], r: number = CORNER_R): { a: Vec; v: Vec; b: Vec }[] {
+  const n = ring.length;
+  const out: { a: Vec; v: Vec; b: Vec }[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = ring[(i + n - 1) % n], v = ring[i], q = ring[(i + 1) % n];
+    const lp = Math.hypot(v.x - p.x, v.y - p.y), lq = Math.hypot(q.x - v.x, q.y - v.y);
+    const d = Math.min(r, lp / 2, lq / 2);
+    const kp = lp > 0 ? d / lp : 0, kq = lq > 0 ? d / lq : 0;
+    out.push({
+      a: { x: v.x + (p.x - v.x) * kp, y: v.y + (p.y - v.y) * kp },
+      v,
+      b: { x: v.x + (q.x - v.x) * kq, y: v.y + (q.y - v.y) * kq },
+    });
+  }
+  return out;
+}
+
 // Sim replaces land arrays on change, so array identity is the cache key.
 const pathCache = new WeakMap<MultiPoly, Path2D>();
 
+/** Land outline with rounded corners (see roundedCorners). */
 export function landPath(m: MultiPoly): Path2D {
   let path = pathCache.get(m);
   if (path) return path;
@@ -55,8 +82,13 @@ export function landPath(m: MultiPoly): Path2D {
   for (const poly of m) {
     for (const ring of poly) {
       if (ring.length < 3) continue;
-      path.moveTo(ring[0].x, ring[0].y);
-      for (let i = 1; i < ring.length; i++) path.lineTo(ring[i].x, ring[i].y);
+      const cs = roundedCorners(ring);
+      path.moveTo(cs[0].b.x, cs[0].b.y);
+      for (let i = 1; i <= cs.length; i++) {
+        const c = cs[i % cs.length];
+        path.lineTo(c.a.x, c.a.y);
+        path.quadraticCurveTo(c.v.x, c.v.y, c.b.x, c.b.y);
+      }
       path.closePath();
     }
   }
@@ -445,6 +477,31 @@ function drawHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: 
   ctx.restore();
 }
 
+/**
+ * Draws a head in its spawn pose: lifted above its spot (with a ground shadow that darkens
+ * as it lands), scaled about its base so a squash stays on the ground.
+ */
+function drawPosedHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: number, face: Face | undefined,
+  pose: HeadPose): void {
+  const land = 1 - pose.lift / SPAWN_HEIGHT;
+  const prevAlpha = ctx.globalAlpha;
+  ctx.globalAlpha = prevAlpha * 0.25 * land;
+  ctx.fillStyle = '#28283a';
+  ctx.beginPath();
+  ctx.ellipse(head.x, head.y + HEAD_SIDE, (HEAD_SIZE / 2) * (0.5 + 0.5 * land), (HEAD_SIZE / 4) * (0.5 + 0.5 * land),
+    0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = prevAlpha * pose.alpha;
+  const baseY = head.y + HEAD_SIZE / 2 + HEAD_SIDE;
+  ctx.save();
+  ctx.translate(head.x, baseY - pose.lift);
+  ctx.scale(pose.sx, pose.sy);
+  ctx.translate(-head.x, -baseY);
+  drawHead(ctx, p, head, heading, face);
+  ctx.restore();
+  ctx.globalAlpha = prevAlpha;
+}
+
 const SHIELD = '#6CC3EF';
 const SHIELD_R = 1.25;
 const SHIELD_RING_W = 0.16;
@@ -604,7 +661,10 @@ export function render(
       drawShield(ctx, humanHead, human.protectedUntil - world.time, world.time, reduced);
     }
     ctx.globalAlpha = headAlpha(world, p, reduced);
-    drawHead(ctx, p, heads.get(p.id)!, interpHeading(fx, p, alpha), fx.faceOf?.(p));
+    const pose = reduced ? null : effects?.headPose(p.id) ?? null;
+    const head = heads.get(p.id)!, heading = interpHeading(fx, p, alpha), face = fx.faceOf?.(p);
+    if (pose) drawPosedHead(ctx, p, head, heading, face, pose);
+    else drawHead(ctx, p, head, heading, face);
   }
   ctx.globalAlpha = 1;
   effects?.drawWorldTop(ctx);
@@ -617,7 +677,8 @@ export function render(
   ctx.fillStyle = 'rgba(40, 40, 55, 0.6)';
   for (const p of order) {
     const h = heads.get(p.id)!;
-    const sp = cam.worldToScreen({ x: h.x, y: h.y - NAME_OFFSET });
+    const lift = reduced ? 0 : effects?.headPose(p.id)?.lift ?? 0;
+    const sp = cam.worldToScreen({ x: h.x, y: h.y - NAME_OFFSET - lift });
     ctx.fillText(p.name, sp.x, sp.y);
   }
 
