@@ -23,6 +23,8 @@
 
         <!-- AdMob app ID: set admobAppId in android/keystore.properties for release (defaults to Google's TEST id). -->
         <meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="${admobAppId}" />
+        <!-- Hide the SDK's native-ad validator popup that test ads show over the game. -->
+        <meta-data android:name="com.google.android.gms.ads.flag.NATIVE_AD_DEBUGGER_ENABLED" android:value="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
