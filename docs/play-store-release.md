@@ -51,7 +51,7 @@ path, passwords and AdMob app id. That file and `*.jks` are gitignored.
 
 | Item | Notes |
 |---|---|
-| Privacy policy URL | **Required** (the app uses AdMob, so it shares the advertising ID). Host a page, e.g. GitHub Pages. |
+| Privacy policy URL | https://kapilrohilla.github.io/territory-wars/privacy/ (source: `privacy/index.html`, served by GitHub Pages from `main`). |
 | Ads | Yes |
 | Data safety | Declare: Device or other IDs (advertising ID), App activity, Diagnostics. Shared with Google AdMob for advertising. Encrypted in transit. |
 | Advertising ID | Yes, used for advertising. The AdMob SDK adds the `AD_ID` permission automatically. |

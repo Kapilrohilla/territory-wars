@@ -17,15 +17,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Kapilrohilla/paper-io-clone.git"
+    "url": "git+https://github.com/Kapilrohilla/territory-wars.git"
   },
   "keywords": [],
   "author": "kapil rohilla <kapil.rohilla@carrum.co.in>",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/Kapilrohilla/paper-io-clone/issues"
+    "url": "https://github.com/Kapilrohilla/territory-wars/issues"
   },
-  "homepage": "https://github.com/Kapilrohilla/paper-io-clone#readme",
+  "homepage": "https://github.com/Kapilrohilla/territory-wars#readme",
   "devDependencies": {
     "@capacitor/assets": "^3.0.5",
     "@capacitor/cli": "^8.5.3",
