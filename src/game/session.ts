@@ -73,6 +73,17 @@ export const DOWN_DELAY_MS = 600;
 const MAX_DPR = 2;
 
 /** Wires world + bots + input + loop + camera + renderer + effects onto a canvas. */
+/**
+ * The human's final share of the arena (%): its land while alive, its dying land once dead.
+ * A living killer absorbs the land and clears dyingLand, so then the share it had on its
+ * last living step (alivePct) counts instead of 0.
+ */
+export function finalSharePct(world: World, alivePct: number): number {
+  const h = world.players[world.humanId];
+  const land = h.alive ? h.land : h.dyingLand;
+  return land ? (landArea(land) / (Math.PI * CONFIG.ARENA_R * CONFIG.ARENA_R)) * 100 : alivePct;
+}
+
 export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {}): Session {
   const seed = (opts.seed ?? Date.now()) >>> 0;
   const world = createWorld({
@@ -149,11 +160,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     // Every step, even a silent one: the revive shield's end is a state edge, not an event.
     for (const cue of soundsFor(world.events, world, sfx)) playSound(cue.name, cue);
   };
-  const recordFinalPct = () => {
-    const h = world.players[world.humanId];
-    const land = h.alive ? h.land : h.dyingLand ?? [];
-    finalPct = (landArea(land) / (Math.PI * CONFIG.ARENA_R * CONFIG.ARENA_R)) * 100;
-  };
+  /** The human's share on the last step it was alive (see finalSharePct). */
+  let alivePct = 0;
+  const recordFinalPct = () => { finalPct = finalSharePct(world, alivePct); };
 
   // Knocked out: the world is frozen behind the revive offer; rendering goes on.
   let downAt: number | null = null;
@@ -167,6 +176,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     snapshotFx(fx, world);
     const inputs = botInputs(world, brains, rng);
     inputs.set(world.humanId, { targetHeading: input.targetHeading() });
+    if (world.players[world.humanId].alive) alivePct = pct(world, world.humanId);
     step(world, inputs);
     notifyEvents();
     if (world.over) recordFinalPct();
