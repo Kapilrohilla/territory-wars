@@ -1,3 +1,17 @@
+// Fonts are bundled (not fetched from Google Fonts) so the app starts fast and looks
+// right offline. Only the weights style.css uses, Latin + Latin Extended subsets.
+import '@fontsource/rubik/latin-700.css';
+import '@fontsource/rubik/latin-ext-700.css';
+import '@fontsource/rubik/latin-800.css';
+import '@fontsource/rubik/latin-ext-800.css';
+import '@fontsource/rubik/latin-900.css';
+import '@fontsource/rubik/latin-ext-900.css';
+import '@fontsource/nunito-sans/latin-400.css';
+import '@fontsource/nunito-sans/latin-ext-400.css';
+import '@fontsource/nunito-sans/latin-600.css';
+import '@fontsource/nunito-sans/latin-ext-600.css';
+import '@fontsource/nunito-sans/latin-700.css';
+import '@fontsource/nunito-sans/latin-ext-700.css';
 import { createSession, type Session } from './game/session';
 import { playSound, unlockAudio } from './game/sound';
 import { DIFFICULTIES, type Difficulty } from './sim/config';
