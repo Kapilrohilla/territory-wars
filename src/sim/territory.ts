@@ -161,3 +161,42 @@ export function keepPiece(m: MultiPoly, head: Vec): MultiPoly {
   }
   return [best];
 }
+
+/** a ∪ b with holes filled: a killer taking its victim's land. Islands stay separate pieces. */
+export function mergeLand(a: MultiPoly, b: MultiPoly): MultiPoly {
+  if (b.length === 0) return a;
+  if (a.length === 0) return b;
+  try {
+    let merged = fillHoles(pc.union(toPCMulti(a), toPCMulti(b)) as PCMulti);
+    if (merged.length > 1) merged = fillHoles(pc.union(merged) as PCMulti);
+    return fromPCMulti(merged);
+  } catch {
+    return a;
+  }
+}
+
+/** The largest polygon of m; [] if empty. */
+function largestPiece(m: MultiPoly): MultiPoly {
+  let best: MultiPoly = [], ba = -1;
+  for (const poly of m) {
+    const a = polyArea(poly);
+    if (a > ba) { ba = a; best = [poly]; }
+  }
+  return best;
+}
+
+/**
+ * m minus cut, piece by piece. The home piece (holding head, else the nearest) keeps only
+ * its part around head, as keepPiece does; any other island keeps its largest fragment.
+ * Pieces cut doesn't touch are kept as they are.
+ */
+export function cutLand(m: MultiPoly, cut: MultiPoly, head: Vec): MultiPoly {
+  if (m.length <= 1) return keepPiece(subtractLand(m, cut), head);
+  const home = keepPiece(m, head)[0];
+  const out: MultiPoly = [];
+  for (const poly of m) {
+    const left = subtractLand([poly], cut);
+    out.push(...(poly === home ? keepPiece(left, head) : largestPiece(left)));
+  }
+  return out;
+}

@@ -564,8 +564,10 @@ describe('world', () => {
     for (let i = 0; i < 60 && b.alive; i++) step(w, NO_INPUT);
     expect(b.alive).toBe(false);
     const t0 = b.deathTime!;
-    expect(b.dyingLand).not.toBeNull();
+    // The human burnt this trail, so it took the bot's land rather than leaving it to sink.
+    expect(b.dyingLand).toBeNull();
     expect(b.land.length).toBe(0);
+    expect(landContains(w.players[0].land, v(40, 40))).toBe(true);
     // keep the human safe at home: circle inside own land is fine, just steer back
     while (w.time < t0 + CONFIG.DEATH_SHRINK_S + 0.05) step(w, NO_INPUT);
     expect(b.dyingLand).toBeNull();
@@ -668,6 +670,26 @@ describe('revive', () => {
     }
     expect(w.events).toContainEqual({ type: 'down', playerId: 0, killerId: null, cause: 'self' });
     expect(w.downKillerId).toBeNull();
+  });
+
+  it("selfCross 'pass' lets the human cross its own trail and live", () => {
+    const w = soloWorld();
+    w.selfCross = 'pass';
+    const h = w.players[0];
+    let downed = false;
+    for (let i = 0; i < 400; i++) {
+      const t = w.time;
+      const target = t < 1 ? 0 : t < 1.5 ? Math.PI / 2 : t < 2 ? Math.PI : -Math.PI / 2;
+      step(w, steer(target));
+      if (w.events.some((e) => e.type === 'down' || e.type === 'death')) downed = true;
+    }
+    expect(downed).toBe(false);
+    expect(h.alive).toBe(true);
+  });
+
+  it("selfCross defaults to 'die'", () => {
+    expect(createWorld({ seed: 1, humanName: 'T', humanColor: 0 }).selfCross).toBe('die');
+    expect(createWorld({ seed: 1, humanName: 'T', humanColor: 0, selfCross: 'pass' }).selfCross).toBe('pass');
   });
 
   it('reviveHuman restores the land at death and puts the head inside it', () => {
@@ -817,9 +839,52 @@ describe('revive', () => {
     expect(w.over).toBe(true);
     expect(w.awaitingRevive).toBe(false);
     expect(w.events).toContainEqual({ type: 'gameover' });
-    // the final death (for the shrink effect); the kill was already credited at the down
+    // the final death; the kill was already credited at the down
     expect(w.events).toContainEqual({ type: 'death', playerId: 0, killerId: 1, cause: 'trail' });
     expect(b.kills).toBe(1);
-    expect(w.players[0].dyingLand).toBe(land);
+    // only now (not at the down) does the killer take the human's land
+    const absorb = w.events.find((e) => e.type === 'absorb');
+    expect(absorb).toMatchObject({ playerId: 1, victimId: 0, region: land });
+    expect(w.players[0].dyingLand).toBeNull();
+    expect(landArea(b.land)).toBeGreaterThan(landArea(land!));
+  });
+
+  it('a down keeps the land for the revive: the killer takes nothing yet', () => {
+    const w = soloWorld();
+    const b = trailTrap(w);
+    const before = landArea(b.land);
+    for (let i = 0; i < 60 && !w.awaitingRevive; i++) step(w, NO_INPUT);
+    expect(w.players[0].dyingLand).not.toBeNull();
+    expect(landArea(b.land)).toBeCloseTo(before);
+    expect(w.events.some((e) => e.type === 'absorb')).toBe(false);
+  });
+});
+
+describe('killer takes the land', () => {
+  it('a bot killed by the human hands over its land as an absorb event', () => {
+    const w = soloWorld();
+    const b = placeBot(w, v(5, 6), Math.PI / 2);
+    b.trail = [v(5, -5), v(5, 5)];
+    const botLand = b.land;
+    const before = pct(w, 0);
+    let absorb: Extract<World['events'][number], { type: 'absorb' }> | undefined;
+    for (let i = 0; i < 60 && b.alive; i++) {
+      step(w, NO_INPUT);
+      absorb ??= w.events.find((e) => e.type === 'absorb') as typeof absorb;
+    }
+    expect(absorb).toMatchObject({ playerId: 0, victimId: 1, region: botLand });
+    expect(absorb!.gainedPct).toBeCloseTo((landArea(botLand) / (Math.PI * CONFIG.ARENA_R ** 2)) * 100, 3);
+    expect(pct(w, 0)).toBeCloseTo(before + absorb!.gainedPct, 3);
+    expect(landContains(w.players[0].land, v(40, 40))).toBe(true);
+  });
+
+  it('a self-kill leaves the land to sink (nobody takes it)', () => {
+    const w = soloWorld();
+    const b = placeBot(w, v(20, -20), Math.PI / 2);
+    b.trail = [v(18, -18), v(22, -18), v(22, -22), v(20, -22), v(20, -21)];
+    for (let i = 0; i < 60 && b.alive; i++) step(w, NO_INPUT);
+    expect(b.alive).toBe(false);
+    expect(b.dyingLand).not.toBeNull();
+    expect(landContains(w.players[0].land, v(40, 40))).toBe(false);
   });
 });

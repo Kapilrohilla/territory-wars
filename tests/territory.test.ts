@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  landArea, landContains, thickTrail, captureLand, subtractLand, keepPiece,
+  landArea, landContains, thickTrail, captureLand, subtractLand, keepPiece, mergeLand, cutLand,
 } from '../src/sim/territory';
 import type { MultiPoly, Vec } from '../src/sim/geometry';
 import * as pc from 'polygon-clipping';
@@ -155,5 +155,30 @@ describe('territory', () => {
 
   it('keepPiece of empty is empty', () => {
     expect(keepPiece([], v(0, 0))).toEqual([]);
+  });
+});
+
+describe('mergeLand / cutLand', () => {
+  const sq = (x: number, y: number, s: number): MultiPoly => [[[v(x, y), v(x + s, y), v(x + s, y + s), v(x, y + s)]]];
+  it('merges touching land into one piece and keeps a far island separate', () => {
+    const one = mergeLand(sq(0, 0, 4), sq(4, 0, 4));
+    expect(one).toHaveLength(1);
+    expect(landArea(one)).toBeCloseTo(32);
+    const two = mergeLand(sq(0, 0, 4), sq(20, 20, 2));
+    expect(two).toHaveLength(2);
+    expect(landArea(two)).toBeCloseTo(20);
+  });
+  it('a cut on the home piece keeps the far island', () => {
+    const land = mergeLand(sq(0, 0, 4), sq(20, 20, 2));
+    const out = cutLand(land, sq(2, -1, 6), v(1, 1));
+    expect(landArea(out)).toBeCloseTo(8 + 4);
+    expect(landContains(out, v(21, 21))).toBe(true);
+  });
+  it('a cut through an island keeps its larger fragment', () => {
+    const land = mergeLand(sq(0, 0, 4), sq(20, 20, 4));
+    const out = cutLand(land, rect(19, 21, 26, 21.5), v(1, 1));
+    expect(landContains(out, v(1, 1))).toBe(true);
+    expect(landContains(out, v(22, 23))).toBe(true); // the bigger part above the cut
+    expect(landContains(out, v(22, 20.5))).toBe(false); // the sliver below is dropped
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ASH_FADE_LEN, SHIELD_FADE_S, ashAlpha, headAlpha, nearestPointOnLand, pointOnTrail,
   shieldAlpha, shieldFraction, vignetteAlpha,
+  roundedCorners, CORNER_R,
 } from '../src/game/render';
 import { createWorld } from '../src/sim/world';
 import { CONFIG } from '../src/sim/config';
@@ -99,5 +100,24 @@ describe('ashAlpha', () => {
     expect(ashAlpha(back, s0, back, front)).toBe(1);
     expect(ashAlpha(front - ASH_FADE_LEN / 2, s0, back, front)).toBeCloseTo(0.5);
     expect(ashAlpha(s0, s0, back, front)).toBe(0); // the hit point burnt longest ago
+  });
+});
+
+describe('roundedCorners', () => {
+  const v = (x: number, y: number) => ({ x, y });
+  it('caps the cut at CORNER_R on long edges, so a big square only gets soft corners', () => {
+    const cs = roundedCorners([v(0, 0), v(10, 0), v(10, 10), v(0, 10)]);
+    expect(cs[1].a).toEqual(v(10 - CORNER_R, 0));
+    expect(cs[1].b).toEqual(v(10, CORNER_R));
+  });
+  it('cuts at most half an edge, so a fine polygon becomes a continuous curve', () => {
+    const ring = Array.from({ length: 24 }, (_, i) => v(3 * Math.cos((i / 24) * Math.PI * 2), 3 * Math.sin((i / 24) * Math.PI * 2)));
+    const cs = roundedCorners(ring);
+    for (let i = 0; i < cs.length; i++) {
+      const next = cs[(i + 1) % cs.length];
+      // Each curve ends exactly where the next begins: no straight facets remain.
+      expect(cs[i].b.x).toBeCloseTo(next.a.x, 9);
+      expect(cs[i].b.y).toBeCloseTo(next.a.y, 9);
+    }
   });
 });

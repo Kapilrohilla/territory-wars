@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
-  highestBest, hudAlerts, NAME_MAX, randomName, readFlag, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
+  highestBest, hudAlerts, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
 import { isVibrationOn, setVibrationOn } from '../src/native/platform';
 import { COLOR_NAMES, PALETTE } from '../src/game/palette';
@@ -148,6 +148,27 @@ describe('highestBest', () => {
   it('picks the top % and breaks ties on kills', () => {
     expect(highestBest({ easy: b(41.2), normal: b(18.2), hard: null })).toBe('easy');
     expect(highestBest({ easy: b(10, 1), hard: b(10, 3) })).toBe('hard');
+  });
+});
+
+describe('readChoice / writeChoice', () => {
+  const mem = () => {
+    const m = new Map<string, string>();
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { m.set(k, v); } };
+  };
+  const MODES = ['die', 'pass'] as const;
+  it('round-trips a known value and falls back when unset or unknown', () => {
+    const s = mem();
+    expect(readChoice('k', MODES, 'die', s)).toBe('die');
+    writeChoice('k', 'pass', s);
+    expect(readChoice('k', MODES, 'die', s)).toBe('pass');
+    s.setItem('k', 'bogus');
+    expect(readChoice('k', MODES, 'die', s)).toBe('die');
+  });
+  it('falls back when storage throws', () => {
+    const broken = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+    expect(readChoice('k', MODES, 'die', broken)).toBe('die');
+    expect(() => writeChoice('k', 'pass', broken)).not.toThrow();
   });
 });
 

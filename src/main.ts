@@ -5,7 +5,7 @@ import { loadBest, recordRun } from './ui/best';
 import {
   loadAdUnlocks, loadLifetime, loadSkin, newlyUnlocked, recordRevive, recordRound, saveAdUnlock, saveSkin,
 } from './ui/progress';
-import { cleanName, createScreens, DEFAULT_NAME, type StartPrefs, type Tab } from './ui/screens';
+import { cleanName, createScreens, DEFAULT_NAME, loadSelfCross, type StartPrefs, type Tab } from './ui/screens';
 import { attachNativeAd, initAds, privacyOptionsRequired, showPrivacyOptions, showRewarded } from './native/ads';
 import { initApp, isNative } from './native/platform';
 
@@ -137,6 +137,7 @@ function play(prefs: StartPrefs): void {
     humanName: prefs.name,
     humanSkin: loadSkin(lifetimeBefore, loadAdUnlocks()).id,
     difficulty: prefs.difficulty,
+    selfCross: loadSelfCross(),
     requestRevive: showRewarded, // a rewarded ad in the app; free in a browser
     onDown: (world, killerName) => {
       const human = world.players[world.humanId];

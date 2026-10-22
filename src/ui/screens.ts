@@ -3,7 +3,7 @@ import { isMuted, playSelect, playTick, setMuted, unlockAudio } from '../game/so
 import { isNative, isVibrationOn, setVibrationOn } from '../native/platform';
 import { NAMES } from '../sim/names';
 import { pct } from '../sim/world';
-import { CONFIG, DIFFICULTIES, type Difficulty } from '../sim/config';
+import { CONFIG, DIFFICULTIES, SELF_CROSS_MODES, type Difficulty, type SelfCross } from '../sim/config';
 import type { DeathCause, Player, World } from '../sim/types';
 import type { BestScore } from './best';
 import { button, el, icon, labelRow, setText, statTile, svg, type IconName } from './dom';
@@ -152,6 +152,26 @@ export function writeFlag(key: string, on: boolean, store: FlagStore = globalThi
   try { store?.setItem(key, on ? '1' : '0'); } catch { /* storage unavailable */ }
 }
 
+/** One of `options` from storage; `fallback` when unset, unknown or storage is unavailable. */
+export function readChoice<T extends string>(key: string, options: readonly T[], fallback: T,
+  store: FlagStore = globalThis.localStorage): T {
+  try {
+    const v = store?.getItem(key);
+    return v !== null && v !== undefined && (options as readonly string[]).includes(v) ? (v as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeChoice(key: string, value: string, store: FlagStore = globalThis.localStorage): void {
+  try { store?.setItem(key, value); } catch { /* storage unavailable */ }
+}
+
+/** The human's own-trail rule (a setting; knocked out by default). */
+export const SELF_CROSS_KEY = 'territory-wars.self-cross';
+export const loadSelfCross = (): SelfCross => readChoice(SELF_CROSS_KEY, SELF_CROSS_MODES, 'die');
+const SELF_CROSS_LABEL: Record<SelfCross, string> = { die: 'Knocked out', pass: 'Pass through' };
+
 /** One-line verdict under the results %: a win, or how much of the arena was held. */
 export function territoryVerdict(pct: number, won: boolean): string {
   if (won) return 'Conquered the arena';
@@ -205,6 +225,9 @@ export const MINIMAP_KEY = 'territory-wars.minimap';
 
 const DIFFICULTY_LABEL: Record<Difficulty, string> = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
 const DIFFICULTY_SHORT: Record<Difficulty, string> = { easy: 'Easy', normal: 'Norm', hard: 'Hard' };
+
+/** The revive card ignores taps for this long after it opens (it is still popping in). */
+export const REVIVE_ARM_MS = 350;
 
 /** How long the revive offer stays open before it gives up by itself. */
 export const REVIVE_COUNTDOWN_MS = 5000;
@@ -491,6 +514,32 @@ export function createScreens(root: HTMLElement): Screens {
     minimapOn = on;
     writeFlag(MINIMAP_KEY, on);
   });
+  // Own-trail rule: a choice (more modes may follow), so a picker rather than a switch. The
+  // native <select> covers the whole row (invisibly), so a tap anywhere opens the OS picker.
+  const selfCrossRow = el('div', 'tw-setting tw-setting-choice');
+  const selfCrossSelect = el('select', 'tw-choice');
+  selfCrossSelect.setAttribute('aria-label', 'When you cross your own trail');
+  for (const m of SELF_CROSS_MODES) {
+    const o = el('option', undefined, SELF_CROSS_LABEL[m]);
+    o.value = m;
+    selfCrossSelect.append(o);
+  }
+  const selfCrossValue = el('span', 'tw-choice-value');
+  const showSelfCross = (m: SelfCross) => {
+    selfCrossSelect.value = m;
+    setText(selfCrossValue, SELF_CROSS_LABEL[m]);
+    selfCrossRow.dataset.value = m;
+  };
+  showSelfCross(loadSelfCross());
+  selfCrossSelect.addEventListener('change', () => {
+    const m = selfCrossSelect.value as SelfCross;
+    writeChoice(SELF_CROSS_KEY, m);
+    showSelfCross(m);
+    playTick();
+  });
+  selfCrossRow.append(icon('x-circle'), el('span', 'tw-setting-label', 'Own trail'), selfCrossValue,
+    icon('chevron', 'tw-chevron'), selfCrossSelect);
+  settingsList.append(selfCrossRow);
   // Privacy & ads: Google's consent form in the app; a browser build shows no ads at all.
   const privacyBtn = button('tw-setting tw-privacy');
   const privacyIcon = el('span', 'tw-privacy-icon');
@@ -719,6 +768,13 @@ export function createScreens(root: HTMLElement): Screens {
   // One offer at a time: `offer` is null once it is settled (revived or given up).
   let offer: { handlers: ReviveHandlers; remaining: number; deadline: number; pending: boolean } | null = null;
   let reviveFrame: number | null = null;
+  /** Taps are ignored while the card pops in, so a steering tap can't land on a button. */
+  let armTimer: ReturnType<typeof setTimeout> | null = null;
+  const disarm = () => {
+    if (armTimer !== null) clearTimeout(armTimer);
+    armTimer = null;
+    revive.classList.remove('tw-arming');
+  };
   const stopCountdown = () => {
     if (reviveFrame !== null) cancelAnimationFrame(reviveFrame);
     reviveFrame = null;
@@ -729,6 +785,7 @@ export function createScreens(root: HTMLElement): Screens {
   };
   const closeRevive = () => {
     stopCountdown();
+    disarm();
     offer = null;
     revive.hidden = true;
     document.removeEventListener('keydown', onReviveKey);
@@ -1044,6 +1101,9 @@ export function createScreens(root: HTMLElement): Screens {
       offer = { handlers, remaining: REVIVE_COUNTDOWN_MS, deadline: 0, pending: false };
       setPending(false);
       drawCountdown(REVIVE_COUNTDOWN_MS);
+      disarm();
+      revive.classList.add('tw-arming');
+      armTimer = setTimeout(disarm, REVIVE_ARM_MS);
       revive.hidden = false;
       document.addEventListener('keydown', onReviveKey);
       document.addEventListener('visibilitychange', onReviveVisibility);
