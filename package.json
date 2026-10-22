@@ -12,7 +12,8 @@
     "build": "tsc --noEmit && vite build",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android",
-    "android:run": "npm run build && cap sync android && cap run android"
+    "android:run": "npm run build && cap sync android && cap run android",
+    "android:assets": "capacitor-assets generate --android --iconBackgroundColor '#f8f7f3' --splashBackgroundColor '#e4e2dc'"
   },
   "repository": {
     "type": "git",
@@ -26,6 +27,7 @@
   },
   "homepage": "https://github.com/Kapilrohilla/paper-io-clone#readme",
   "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
     "@capacitor/cli": "^8.5.3",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
