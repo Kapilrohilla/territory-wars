@@ -183,10 +183,48 @@ describe('music player', () => {
     expect(count()).toBe(n);
 
     player.dispose();
+    timers.run(5000, ctx); // the deferred graph teardown is the only timer left
     expect(timers.pending.size).toBe(0);
     expect(() => { player.events([{ e: 'steal' }]); player.setMood({ tier: 1, danger: 0 }); player.resume(); }).not.toThrow();
     timers.run(5000, ctx);
     expect(count()).toBe(n);
+  });
+
+  it('dispose_after_win_lets_the_cadence_finish', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(100, ctx);
+    const nodesBefore = ctx.nodes.length;
+    player.events([{ e: 'win' }]);
+    const end = Math.max(...ctx.sources.filter((x) => x.startT >= 0).map((x) => x.stopT));
+    const [filter, out] = [ctx.nodes[1], ctx.nodes[0]];
+    expect(nodesBefore).toBeGreaterThan(1);
+    player.dispose();
+    expect(timers.pending.size).toBe(1); // the scheduler is stopped; only the teardown remains
+    timers.run((end - ctx.currentTime) * 1000 - 50, ctx);
+    expect(out.disconnected).toBe(false);
+    expect(filter.disconnected).toBe(false);
+    timers.run(2000, ctx);
+    expect(out.disconnected).toBe(true);
+    expect(filter.disconnected).toBe(true);
+    expect(getTranspose()).toBe(0);
+    player.dispose(); // a second dispose is a no-op
+    expect(timers.pending.size).toBe(0);
+  });
+
+  it('dispose_mid_bar_fades_rather_than_hard_cuts', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(300, ctx);
+    const out = ctx.gainNodes[0];
+    const now = ctx.currentTime;
+    player.dispose();
+    expect(out.disconnected).toBe(false);
+    expect(out.gain.calls.some((c) => c.kind === 'lin' && c.v === 0 && c.t > now)).toBe(true);
+    timers.run(500, ctx);
+    expect(out.disconnected).toBe(true);
   });
 
   it('starts_late_when_context_appears', () => {

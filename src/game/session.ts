@@ -58,6 +58,8 @@ export type SessionOpts = {
    * (with its quick-kill `streak`) shows the KNOCKOUT! banner.
    */
   onCue?: (cue: Cue) => void;
+  /** The round's music player; a test injects a stub. Defaults to a fresh seeded player. */
+  music?: MusicPlayer;
 };
 
 /** How often (ms) the HUD rects are re-read while the round runs. */
@@ -148,7 +150,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const overlay = createOverlay(danger, threats, (p) => fx.faceOf!(p), input);
   // The round's music: its own seed (game layer, not the sim's), its key from the seed.
   const musicSeed = Math.floor(Math.random() * 2 ** 31);
-  const music = createMusicPlayer({
+  const music = opts.music ?? createMusicPlayer({
     difficulty: opts.difficulty ?? 'normal',
     seed: musicSeed,
     roundKey: ROUND_KEYS[musicSeed % ROUND_KEYS.length],
@@ -285,8 +287,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     effects.update(dt * fxScale);
     if (now - hudRectsAt >= HUD_RECTS_MS) refreshHudRects();
     sampleDanger(world, danger);
-    const human = world.players[world.humanId];
-    music.setMood({ tier: tierFor(human.trail.length > 0, danger.raw, danger.burn !== null), danger: danger.raw });
+    music.setMood({ tier: tierFor(world.players[world.humanId].trail.length > 0, danger.raw, danger.burn !== null), danger: danger.raw });
     // Real time, and only while the loop runs: silent when paused (no frames), and the
     // controller itself goes quiet behind the revive offer and once the round is over.
     tension.update(world, dt, danger);
@@ -324,12 +325,14 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       if (overAt === null) {
         overAt = now;
         disposeInput();
+        // The closing cadence (if any) is already queued; the player lets it ring out, and the
+        // effect transpose goes back to 0 here so the results screen's sounds aren't shifted.
+        music.dispose();
       }
       if (now - overAt >= OVER_TAIL_MS) {
         overNotified = true;
         stop();
         opts.onOver?.(world);
-        music.dispose(); // the round is over; no timer outlives it
       }
     }
   };

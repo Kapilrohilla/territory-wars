@@ -33,6 +33,10 @@ const PAUSE_FADE_S = 0.15;
 const DOWN_S = 0.8;
 const DOWN_CUTOFF = 200;
 const REVIVE_FADE_S = 0.5;
+/** Dispose mid-music: a short fade so the cut doesn't click. */
+const DISPOSE_FADE_S = 0.1;
+/** Slack after a queued note's end for its release before the graph is torn down. */
+const TAIL_S = 0.6;
 
 /** Cancels automation after `now`, keeping the param at its current value (mid-ramp included). */
 function hold(p: AudioParam, now: number): void {
@@ -86,6 +90,8 @@ export function createMusicPlayer(opts: {
   /** Context time of step 0; moved forward after a pause or a stall so bars never pile up. */
   let t0 = 0;
   let nextBar = 0;
+  /** Context time by which every note queued so far has finished (release included). */
+  let queuedEnd = 0;
   /** The cutoff (and tier) the filter was last aimed at, so per-frame setMood calls stay cheap. */
   let aimed = { cutoff: 0, tier: -1 };
 
@@ -103,6 +109,7 @@ export function createMusicPlayer(opts: {
     // Read per call: a milestone lifts everything scheduled from here on, not what's already queued.
     const key = roundKey + composer.keyOffset;
     for (const n of notes) {
+      queuedEnd = Math.max(queuedEnd, Math.max(now, stepTime(n.step)) + n.dur * stepS + TAIL_S);
       const freq = 440 * 2 ** ((n.semi + key) / 12);
       try {
         VOICES[n.layer](c, filter, Math.max(now, stepTime(n.step)), freq, n.dur * stepS, n.vel);
@@ -234,12 +241,25 @@ export function createMusicPlayer(opts: {
       if (disposed) return;
       disposed = true;
       stopTimer();
-      filter?.disconnect();
-      out?.disconnect();
+      setTranspose(0);
+      const ctx = c;
+      const f = filter;
+      const o = out;
       filter = null;
       out = null;
       c = null;
-      setTranspose(0);
+      if (!ctx || !f || !o) return;
+      const now = ctx.currentTime;
+      let wait: number;
+      if (composer.state === 'ended') {
+        wait = queuedEnd - now; // the closing cadence plays out untouched
+      } else {
+        hold(o.gain, now);
+        o.gain.linearRampToValueAtTime(0, now + DISPOSE_FADE_S);
+        wait = DISPOSE_FADE_S + 0.05;
+      }
+      // One tracked timeout tears the graph down once nothing audible is left.
+      timers.set(() => { f.disconnect(); o.disconnect(); }, Math.max(0, wait) * 1000);
     },
 
     setMood(m) {
