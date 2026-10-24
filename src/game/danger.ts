@@ -147,6 +147,8 @@ export function homeTarget(world: World, out: HomeTarget = sharedTarget): HomeTa
 export type DangerState = {
   /** dangerLevel, or 0 when the "danger warnings" setting is off. */
   level: number;
+  /** dangerLevel whatever the setting (the music follows it even with the warnings off). */
+  raw: number;
   /** burnProgress (shown whatever the setting: a burning trail is never optional news). */
   burn: number | null;
   /** The home target while burning (else null); points into `target`. */
@@ -158,14 +160,15 @@ export type DangerState = {
 
 export function createDangerState(warnings: boolean = dangerWarningsEnabled()): DangerState {
   return {
-    level: 0, burn: null, home: null, warnings,
+    level: 0, raw: 0, burn: null, home: null, warnings,
     cache: createBurnCache(), target: { point: { x: 0, y: 0 }, dist: 0 },
   };
 }
 
 /** Refreshes s from world (no allocation). */
 export function sampleDanger(world: World, s: DangerState): void {
-  s.level = s.warnings ? dangerLevel(world) : 0;
+  s.raw = dangerLevel(world);
+  s.level = s.warnings ? s.raw : 0;
   s.burn = burnProgress(world, s.cache);
   s.home = s.burn === null ? null : homeTarget(world, s.target);
 }

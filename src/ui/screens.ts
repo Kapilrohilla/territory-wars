@@ -1,6 +1,7 @@
 import { COLOR_NAMES, PALETTE } from '../game/palette';
 import {
-  getVolume, isDirectional, isMuted, playSelect, playSound, playTick, setDirectional, setMuted, setVolume, unlockAudio,
+  getMusicVolume, getVolume, isDirectional, isMuted, playMusicPreview, playSelect, playSound, playTick, setDirectional,
+  setMuted, setMusicVolume, setVolume, unlockAudio,
   type SoundName, type SoundOpts,
 } from '../game/sound';
 import { isNative, isVibrationOn, setVibrationOn } from '../native/platform';
@@ -658,41 +659,41 @@ export function createScreens(root: HTMLElement): Screens {
   };
   // Sound & Feel: audio and game-feel switches in their own card, above the general settings.
   const feelList = el('div', 'tw-settings tw-feel');
-  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); }, feelList);
-  // Volume: 0–100, scaling the master gain (mute still wins). Dragging previews with a tick.
-  const volRow = el('div', 'tw-setting tw-setting-slider');
-  const volInput = el('input', 'tw-slider');
-  volInput.type = 'range';
-  volInput.min = '0';
-  volInput.max = '100';
-  volInput.step = '1';
-  volInput.id = 'tw-volume';
-  const volValue = el('span', 'tw-slider-value tw-num');
-  const volLabel = el('label', 'tw-setting-label', 'Volume');
-  volLabel.htmlFor = 'tw-volume';
-  const volTop = el('span', 'tw-slider-top');
-  volTop.append(volLabel, volValue);
-  const volBody = el('span', 'tw-slider-body');
-  volBody.append(volTop, volInput);
-  volRow.append(icon('sound'), volBody);
-  feelList.append(volRow);
-  const showVolume = (v: number) => {
-    volInput.value = String(v);
-    volInput.style.setProperty('--fill', `${v}%`);
-    setText(volValue, `${v}%`);
+  settingRow('sound', 'Sound', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); }, feelList);
+  // Volume sliders: 0–100 each, on their own bus (mute still wins). Dragging previews a sound.
+  const sliderRow = (id: string, label: string, get: () => number, set: (v: number) => void, preview: () => void) => {
+    const row = el('div', 'tw-setting tw-setting-slider');
+    const input = el('input', 'tw-slider');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '100';
+    input.step = '1';
+    input.id = id;
+    const value = el('span', 'tw-slider-value tw-num');
+    const lbl = el('label', 'tw-setting-label', label);
+    lbl.htmlFor = id;
+    const top = el('span', 'tw-slider-top');
+    top.append(lbl, value);
+    const body = el('span', 'tw-slider-body');
+    body.append(top, input);
+    row.append(icon('sound'), body);
+    feelList.append(row);
+    const show = (v: number) => {
+      input.value = String(v);
+      input.style.setProperty('--fill', `${v}%`);
+      setText(value, `${v}%`);
+    };
+    show(get());
+    const previewOk = createRateLimit(PREVIEW_TICK_MS);
+    input.addEventListener('input', () => {
+      set(Number(input.value));
+      show(get());
+      unlockAudio();
+      if (previewOk(performance.now())) preview();
+    });
   };
-  showVolume(getVolume());
-  const previewOk = createRateLimit(PREVIEW_TICK_MS);
-  const previewTick = () => {
-    unlockAudio();
-    if (previewOk(performance.now())) playTick();
-  };
-  volInput.addEventListener('input', () => {
-    const v = Number(volInput.value);
-    setVolume(v);
-    showVolume(getVolume());
-    previewTick();
-  });
+  sliderRow('tw-volume', 'Sound effects volume', getVolume, setVolume, playTick);
+  sliderRow('tw-music-volume', 'Music', getMusicVolume, setMusicVolume, playMusicPreview);
   settingRow('headphones', 'Directional sound', isDirectional, (on) => { setDirectional(on); playTick(); }, feelList,
     'Hear fights off-screen from the side they happen');
   settingRow('vibrate', 'Vibration', isVibrationOn, (on) => setVibrationOn(on), feelList);
@@ -1244,7 +1245,7 @@ export function createScreens(root: HTMLElement): Screens {
   const pauseHomeBtn = button('tw-btn tw-btn-secondary tw-pause-home');
   pauseHomeBtn.append(icon('home'), el('span', undefined, 'Home'));
   const pauseSettings = el('div', 'tw-settings tw-pause-settings');
-  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); }, pauseSettings);
+  settingRow('sound', 'Sound', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); }, pauseSettings);
   pauseCard.append(pauseTitle, resumeBtn, restartBtn, pauseHomeBtn, pauseSettings);
   pause.append(pauseCard);
   pause.hidden = true;

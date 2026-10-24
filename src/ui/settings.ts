@@ -14,6 +14,9 @@ export type SettingsStore = {
 /** Sound effects volume, 0–100. */
 export const SFX_VOLUME_KEY = 'territory-wars.sfxVolume';
 export const DEFAULT_SFX_VOLUME = 80;
+/** Music volume, 0–100. */
+export const MUSIC_VOLUME_KEY = 'territory-wars.musicVolume';
+export const DEFAULT_MUSIC_VOLUME = 50;
 /** "Directional sound": pan cues toward the side of the screen they happen on. */
 export const DIRECTIONAL_KEY = 'territory-wars.directional';
 /** "Danger warnings": the far-from-home pill, vignette, heartbeat, threat arrows and glow. */
@@ -70,6 +73,16 @@ export function getSfxVolume(store?: SettingsStore): number {
 
 export function setSfxVolume(v: number, store?: SettingsStore): void {
   writeRaw(SFX_VOLUME_KEY, String(clampVolume(v, DEFAULT_SFX_VOLUME)), store);
+}
+
+export function getMusicVolume(store?: SettingsStore): number {
+  const raw = readRaw(MUSIC_VOLUME_KEY, store);
+  if (raw === null || raw.trim() === '') return DEFAULT_MUSIC_VOLUME;
+  return clampVolume(Number(raw), DEFAULT_MUSIC_VOLUME);
+}
+
+export function setMusicVolume(v: number, store?: SettingsStore): void {
+  writeRaw(MUSIC_VOLUME_KEY, String(clampVolume(v, DEFAULT_MUSIC_VOLUME)), store);
 }
 
 // The three "on by default" feel flags: anything but '0' is on.

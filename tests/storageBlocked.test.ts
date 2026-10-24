@@ -7,6 +7,7 @@ import { readChoice, readFlag, writeChoice, writeFlag } from '../src/ui/screens'
 import { dangerWarningsEnabled } from '../src/game/danger';
 import { impactEnabled } from '../src/game/impact';
 import { DEFAULT_SKIN } from '../src/game/skins';
+import { getMusicVolume, setMusicVolume } from '../src/game/sound';
 
 /**
  * Where site data is blocked, merely reading `globalThis.localStorage` throws a SecurityError.
@@ -39,6 +40,11 @@ describe('a localStorage getter that throws', () => {
     expect(() => saveAdUnlock('x')).not.toThrow();
     expect(loadSkin(EMPTY_LIFETIME, new Set()).id).toBe(DEFAULT_SKIN);
     expect(() => saveSkin('x')).not.toThrow();
+  });
+
+  it('music volume reads its default and saves without throwing', () => {
+    expect(getMusicVolume()).toBe(50);
+    expect(() => setMusicVolume(20)).not.toThrow();
   });
 
   it('does not throw from readFlag / writeFlag / readChoice / writeChoice', () => {
