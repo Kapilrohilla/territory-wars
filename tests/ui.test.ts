@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
-  highestBest, hudAlerts, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
+  dangerSegments, heartbeatSeconds,
+  buildLeaderboard, rankChanges, overtakeToastText, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
+  createRateLimit, PREVIEW_TICK_MS, TEST_SOUNDS, highestBest, hudAlerts, milestoneRibbonText, streakChipText, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
 import { isVibrationOn, setVibrationOn } from '../src/native/platform';
 import { COLOR_NAMES, PALETTE } from '../src/game/palette';
@@ -231,5 +232,131 @@ describe('randomName', () => {
   });
   it('only returns names within the field limit by default', () => {
     for (let i = 0; i < 20; i++) expect(randomName('You', () => i / 20).length).toBeLessThanOrEqual(NAME_MAX);
+  });
+});
+
+describe('danger pill', () => {
+  it('lights one meter segment per full third of danger', () => {
+    expect(dangerSegments(0)).toBe(0);
+    expect(dangerSegments(0.35)).toBe(1);
+    expect(dangerSegments(2 / 3)).toBe(2);
+    expect(dangerSegments(0.9)).toBe(2);
+    expect(dangerSegments(1)).toBe(3);
+  });
+  it('beats faster with danger: 1.0 − 0.55·danger seconds', () => {
+    expect(heartbeatSeconds(0)).toBeCloseTo(1);
+    expect(heartbeatSeconds(1)).toBeCloseTo(0.45);
+    expect(heartbeatSeconds(0.5)).toBeCloseTo(0.75);
+    expect(heartbeatSeconds(0.9)).toBeLessThan(heartbeatSeconds(0.4));
+  });
+});
+
+describe('milestoneRibbonText', () => {
+  it('names each milestone tier', () => {
+    expect(milestoneRibbonText(0)).toBe('10% CLAIMED!');
+    expect(milestoneRibbonText(1)).toBe('25% CLAIMED!');
+    expect(milestoneRibbonText(2)).toBe('HALF THE MAP!');
+  });
+
+  it('clamps an out-of-range tier', () => {
+    expect(milestoneRibbonText(-1)).toBe('10% CLAIMED!');
+    expect(milestoneRibbonText(7)).toBe('HALF THE MAP!');
+  });
+});
+
+describe('streakChipText', () => {
+  it('shows no chip for a lone knockout', () => {
+    expect(streakChipText(1)).toBeNull();
+    expect(streakChipText(0)).toBeNull();
+  });
+
+  it('counts the kills in the streak from the second one on', () => {
+    expect(streakChipText(2)).toBe('×2 STREAK');
+    expect(streakChipText(3)).toBe('×3 STREAK');
+  });
+});
+
+describe('rankChanges', () => {
+  const rows = (...ents: BoardEntry[]) => buildLeaderboard(ents, ents.length);
+  const me = (pct: number) => e(0, pct, true);
+
+  it('passing one rival', () => {
+    const r = rankChanges(rows(me(4), e(1, 5), e(2, 3)), rows(me(6), e(1, 5), e(2, 3)));
+    expect(r.overtaken.map((o) => o.name)).toEqual(['P1']);
+    expect(r.humanDelta).toBe(1);
+  });
+
+  it('passing two rivals at once', () => {
+    const r = rankChanges(rows(me(1), e(1, 5), e(2, 3), e(3, 0.5)), rows(me(9), e(1, 5), e(2, 3), e(3, 0.5)));
+    expect(r.overtaken.map((o) => o.name).sort()).toEqual(['P1', 'P2']);
+    expect(r.humanDelta).toBe(2);
+  });
+
+  it('counts a pass between two rows that are both off the shown top 5', () => {
+    const others = [1, 2, 3, 4, 5, 6].map((i) => e(i, 10 + i));
+    const r = rankChanges(rows(me(1), ...others, e(9, 2)), rows(me(3), ...others, e(9, 2)));
+    expect(r.overtaken.map((o) => o.name)).toEqual(['P9']);
+  });
+
+  it('dropping reports a negative delta and no overtakes', () => {
+    const r = rankChanges(rows(me(6), e(1, 5)), rows(me(4), e(1, 5)));
+    expect(r.overtaken).toEqual([]);
+    expect(r.humanDelta).toBe(-1);
+  });
+
+  it('no change', () => {
+    const b = rows(me(4), e(1, 5), e(2, 3));
+    expect(rankChanges(b, b)).toEqual({ overtaken: [], humanDelta: 0 });
+  });
+
+  it('a rival above you dying is not an overtake', () => {
+    const r = rankChanges(rows(me(4), e(1, 5), e(2, 3)), rows(me(4), e(2, 3)));
+    expect(r.overtaken).toEqual([]);
+    expect(r.humanDelta).toBe(0);
+  });
+
+  it('a rival respawning below you is not an overtake', () => {
+    const r = rankChanges(rows(me(4), e(2, 3)), rows(me(4), e(2, 3), e(1, 0.1)));
+    expect(r.overtaken).toEqual([]);
+    expect(r.humanDelta).toBe(0);
+  });
+
+  it('matches by id, not name', () => {
+    const renamed = { ...e(1, 5), name: 'Newbie' };
+    const r = rankChanges(rows(me(4), e(1, 5)), rows(me(6), renamed));
+    expect(r.overtaken).toEqual([{ id: 1, name: 'Newbie', colorIndex: 1 }]);
+  });
+
+  it('the first refresh of a round (no previous board) reports nothing', () => {
+    expect(rankChanges([], rows(me(4), e(1, 5)))).toEqual({ overtaken: [], humanDelta: 0 });
+  });
+});
+
+describe('overtakeToastText', () => {
+  it('names one rival, counts several', () => {
+    expect(overtakeToastText([{ name: 'Mango' }])).toBe('You passed Mango!');
+    expect(overtakeToastText([{ name: 'A' }, { name: 'B' }])).toBe('You passed 2 rivals!');
+  });
+});
+
+describe('volume preview tick', () => {
+  it('fires at most once per PREVIEW_TICK_MS while dragging', () => {
+    const ok = createRateLimit(PREVIEW_TICK_MS);
+    expect(PREVIEW_TICK_MS).toBeGreaterThanOrEqual(80);
+    expect(ok(1000)).toBe(true);
+    expect(ok(1000 + PREVIEW_TICK_MS - 1)).toBe(false);
+    expect(ok(1000 + PREVIEW_TICK_MS)).toBe(true);
+    expect(ok(1000 + PREVIEW_TICK_MS + 10)).toBe(false);
+  });
+});
+
+describe('Test sounds', () => {
+  it('plays capture → cut → kill with short gaps', () => {
+    expect(TEST_SOUNDS.map((t) => t.name)).toEqual(['capture', 'cut', 'kill']);
+    for (let i = 1; i < TEST_SOUNDS.length; i++) {
+      const gap = TEST_SOUNDS[i].atMs - TEST_SOUNDS[i - 1].atMs;
+      expect(gap).toBeGreaterThanOrEqual(300);
+      expect(gap).toBeLessThanOrEqual(800);
+    }
   });
 });

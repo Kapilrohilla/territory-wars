@@ -1,4 +1,4 @@
-import { CONFIG, DIFFICULTY } from './config';
+import { CONFIG, DIFFICULTY, type DifficultyTuning } from './config';
 import {
   type Ring, type Vec,
   angleDiff, distPointSeg, pointInRing, segIntersect,
@@ -12,6 +12,15 @@ export type BotBrain = {
   /** Identity of the life this brain was built for (used to detect respawns). */
   name?: string;
   alive?: boolean;
+  /**
+   * Pack hunting (Hard): this bot's slot in the pack hunting the human (0 = aims nearest
+   * the head, 1 = PINCER_GAP further back, ...), or -1 when not committed.
+   */
+  pack?: number;
+  /** World time of the last pack evaluation (shared by all brains of a world). */
+  packAt?: number;
+  /** Scratch for the pack evaluation: distance to the human trail (Infinity = not eligible). */
+  packDist?: number;
 };
 
 // Tuning constants.
@@ -29,6 +38,24 @@ const WAYPOINT_LIMIT_R = 90;
 const MAX_TRAIL_LEN = 40; // u; beyond this an 'out' bot turns back
 const OUTWARD_JITTER = 0.6; // rad
 const SELF_IGNORE_LEN = 1.5; // u of own trail nearest the head ignored for lookahead
+// Smarter (Hard) bots; all gated by the DifficultyTuning flags.
+// smartHunt: cost = distToBot + HEAD_COST · pathLengthFromHumanHead. Below 1, or the head
+// itself always wins (d(head) ≤ d(q) + path(q)) and the bot rams it head-on instead of cutting.
+const HEAD_COST = 0.6;
+const CUT_BEHIND = 2; // u of path length behind the head the nearest aim point sits (slot 0)
+const REACH_SLACK_S = 0.7; // a hunt must arrive within this long after the human gets home
+const PACK_EVAL_S = 0.5; // pack commitment is re-picked this often (world time)
+const PINCER_GAP = 6; // u of human path length between committed bots' aim points
+const RAID_RANGE = 30; // u; a raid only targets human land this close
+const RAID_DEPTH = 2; // u the raid waypoint sits past the human land's edge
+const SAFE_MARGIN = 2; // u
+const SAFE_TRIP_TRIES = 3; // safeReturn: candidate start vertices per trip (the most open one wins)
+const SAFE_TRIP_LOOK = 10; // u past the start vertex where a trip's openness is measured
+const SAFE_TRIP_WALL = 20; // u; the wall counts as a rival head this much further away
+// Head dodge (Hard): heads closing to within DODGE_MISS (u) inside DODGE_T (s), at current
+// headings and speed, make the bot turn away from where the human's head will be.
+const DODGE_T = 0.6;
+const DODGE_MISS = 2;
 
 const dist = (a: Vec, b: Vec) => Math.hypot(a.x - b.x, a.y - b.y);
 const trailLen = (p: Player) => p.trail.length * CONFIG.TRAIL_STEP;
@@ -67,12 +94,23 @@ function ringFor(p: Player): Ring | null {
 function planTrip(world: World, p: Player, brain: BotBrain, rng: () => number) {
   const ring = ringFor(p);
   if (!ring) { brain.waypoints = []; brain.state = 'return'; return; }
-  const b = ring[Math.floor(rng() * ring.length) % ring.length];
+  const tune = DIFFICULTY[world.difficulty];
+  if (tune.raidChance > 0 && rng() < tune.raidChance && planRaid(world, p, brain, ring, tune, rng)) return;
+  let b = ring[Math.floor(rng() * ring.length) % ring.length];
   let cx = 0, cy = 0;
   for (const v of ring) { cx += v.x; cy += v.y; }
   cx /= ring.length; cy /= ring.length;
+  if (tune.safeReturn) {
+    // Safe trips: of a few random start vertices, leave from the one facing the most open ground.
+    let open = openness(world, p, b, cx, cy);
+    for (let k = 1; k < SAFE_TRIP_TRIES; k++) {
+      const c = ring[Math.floor(rng() * ring.length) % ring.length];
+      const o = openness(world, p, c, cx, cy);
+      if (o > open) { open = o; b = c; }
+    }
+  }
   let dir = Math.atan2(b.y - cy, b.x - cx) + (rng() * 2 - 1) * OUTWARD_JITTER;
-  const span = DIFFICULTY[world.difficulty].waypointMax - WAYPOINT_MIN;
+  const span = tune.waypointMax * tune.loopScale - WAYPOINT_MIN;
   const d1 = WAYPOINT_MIN + rng() * span;
   const w1 = clampR({ x: b.x + Math.cos(dir) * d1, y: b.y + Math.sin(dir) * d1 }, WAYPOINT_LIMIT_R);
   const side = rng() < 0.5 ? -1 : 1;
@@ -83,6 +121,49 @@ function planTrip(world: World, p: Player, brain: BotBrain, rng: () => number) {
   brain.state = 'out';
 }
 
+/**
+ * How open the ground is outside ring vertex b (ring centre cx, cy): the distance from a
+ * point SAFE_TRIP_LOOK out past b to the nearest rival head, or to the wall plus
+ * SAFE_TRIP_WALL, whichever is nearer.
+ */
+function openness(world: World, p: Player, b: Vec, cx: number, cy: number): number {
+  const a = Math.atan2(b.y - cy, b.x - cx);
+  const ox = b.x + Math.cos(a) * SAFE_TRIP_LOOK, oy = b.y + Math.sin(a) * SAFE_TRIP_LOOK;
+  let m = CONFIG.ARENA_R - Math.hypot(ox, oy) + SAFE_TRIP_WALL;
+  for (const r of world.players) {
+    if (r === p || !r.alive) continue;
+    const d = Math.hypot(r.pos.x - ox, r.pos.y - oy);
+    if (d < m) m = d;
+  }
+  return m;
+}
+
+/**
+ * A raid (Hard): leave from the own-land vertex nearest the human's land, cut RAID_DEPTH
+ * into its nearest edge, swing sideways and come home, so the captured loop takes a bite
+ * of the human's land. False (no plan made) when that land is more than RAID_RANGE away.
+ */
+function planRaid(world: World, p: Player, brain: BotBrain, ring: Ring, tune: DifficultyTuning, rng: () => number): boolean {
+  const human = world.players[world.humanId];
+  if (!human.alive) return false;
+  const edge = nearestOnRings(human, p.pos);
+  if (!edge || dist(edge, p.pos) > RAID_RANGE) return false;
+  let b = ring[0], bd = Infinity;
+  for (const q of ring) {
+    const d = dist(q, edge);
+    if (d < bd) { bd = d; b = q; }
+  }
+  const dir = Math.atan2(edge.y - b.y, edge.x - b.x);
+  const r = clampR({ x: edge.x + Math.cos(dir) * RAID_DEPTH, y: edge.y + Math.sin(dir) * RAID_DEPTH }, WAYPOINT_LIMIT_R);
+  const side = rng() < 0.5 ? -1 : 1;
+  const back = dir + Math.PI - side * (Math.PI / 3 + rng() * (Math.PI / 6));
+  const d2 = WAYPOINT_MIN + rng() * (tune.waypointMax * tune.loopScale - WAYPOINT_MIN) * 0.5;
+  const w2 = clampR({ x: r.x + Math.cos(back) * d2, y: r.y + Math.sin(back) * d2 }, WAYPOINT_LIMIT_R);
+  brain.waypoints = [b, r, w2];
+  brain.state = 'out';
+  return true;
+}
+
 function nearestOnSeg(p: Vec, a: Vec, b: Vec): Vec {
   const dx = b.x - a.x, dy = b.y - a.y;
   const l2 = dx * dx + dy * dy;
@@ -91,11 +172,16 @@ function nearestOnSeg(p: Vec, a: Vec, b: Vec): Vec {
 }
 
 function nearestOnLand(p: Player): Vec | null {
+  return nearestOnRings(p, p.pos);
+}
+
+/** Nearest point to `at` on the outer rings of p's land (null without land). */
+function nearestOnRings(p: Player, at: Vec): Vec | null {
   let best: Vec | null = null, bd = Infinity;
   for (const r of outerRings(p)) {
     for (let i = 0; i < r.length; i++) {
-      const q = nearestOnSeg(p.pos, r[i], r[(i + 1) % r.length]);
-      const d = dist(q, p.pos);
+      const q = nearestOnSeg(at, r[i], r[(i + 1) % r.length]);
+      const d = dist(q, at);
       if (d < bd) { bd = d; best = q; }
     }
   }
@@ -138,6 +224,149 @@ function huntTarget(world: World, p: Player, human: Player): Vec | null {
   return best;
 }
 
+/**
+ * The human's trail as seen by smartHunt, computed once per botInputs call: whether it can
+ * be hunted at all, its path length (trail + live tail), its bounding box (trail + head) and
+ * how far the human's head is from its own land. Plain module scratch, no per-tick allocation.
+ */
+const prey = { ok: false, total: 0, minX: 0, minY: 0, maxX: 0, maxY: 0, homeDist: 0, nearest: Infinity };
+
+function scanPrey(world: World): void {
+  const h = world.players[world.humanId];
+  const t = h.trail;
+  prey.ok = h.alive && t.length > 0 && !h.burn && world.time >= h.protectedUntil;
+  if (!prey.ok) return;
+  let total = 0;
+  let minX = h.pos.x, maxX = minX, minY = h.pos.y, maxY = minY;
+  for (let i = 0; i < t.length; i++) {
+    const a = t[i], b = i + 1 < t.length ? t[i + 1] : h.pos;
+    total += Math.hypot(b.x - a.x, b.y - a.y);
+    if (a.x < minX) minX = a.x; else if (a.x > maxX) maxX = a.x;
+    if (a.y < minY) minY = a.y; else if (a.y > maxY) maxY = a.y;
+  }
+  prey.total = total;
+  prey.minX = minX; prey.maxX = maxX; prey.minY = minY; prey.maxY = maxY;
+  const home = nearestOnLand(h);
+  prey.homeDist = home ? dist(home, h.pos) : Infinity;
+}
+
+/**
+ * smartHunt aim point for a bot in pack slot `slot`, or null when the human's trail is out
+ * of huntRadius or can't be reached before the human gets home. Among the trail points at
+ * least CUT_BEHIND of path length behind the head, picks the one minimising
+ * distToBot + HEAD_COST·pathFromHead: a real trail point to cut, never the head. Slot k > 0
+ * then aims at the best point a further k·PINCER_GAP behind slot 0's point.
+ * Leaves the bot's distance to the nearest trail point in prey.nearest.
+ */
+function smartTarget(world: World, p: Player, tune: DifficultyTuning, slot: number): Vec | null {
+  prey.nearest = Infinity;
+  if (!prey.ok) return null;
+  const R = tune.huntRadius;
+  const px = p.pos.x, py = p.pos.y;
+  const bx = px < prey.minX ? prey.minX - px : px > prey.maxX ? px - prey.maxX : 0;
+  const by = py < prey.minY ? prey.minY - py : py > prey.maxY ? py - prey.maxY : 0;
+  if (bx * bx + by * by > R * R) return null;
+
+  const h = world.players[world.humanId];
+  const t = h.trail;
+  let best = bestCut(h, px, py, prey.total - CUT_BEHIND);
+  if (prey.nearest > R) return null;
+  if (slot > 0) best = bestCut(h, px, py, cutS - PINCER_GAP * slot);
+  // A trail shorter than the offset: best stays 0 (the trail's start).
+  const target = t[best];
+  // Reachable before the human is home: botDist/SPEED < homeDist/SPEED + slack.
+  if (dist(target, p.pos) / CONFIG.SPEED >= prey.homeDist / CONFIG.SPEED + REACH_SLACK_S) return null;
+  return target;
+}
+
+let cutS = 0; // path length (from trail[0]) of the point bestCut last picked
+/**
+ * Index of the human trail point (path length ≤ maxS) minimising
+ * dist to (px, py) + HEAD_COST·pathFromHead; sets cutS, and prey.nearest (trail and head).
+ */
+function bestCut(h: Player, px: number, py: number, maxS: number): number {
+  const t = h.trail;
+  let nearest = Infinity, bestCost = Infinity, best = 0;
+  let s = 0, lx = t[0].x, ly = t[0].y;
+  cutS = 0;
+  for (let i = 0; i <= t.length; i++) {
+    const q = i < t.length ? t[i] : h.pos;
+    s += Math.hypot(q.x - lx, q.y - ly);
+    lx = q.x; ly = q.y;
+    const d = Math.hypot(q.x - px, q.y - py);
+    if (d < nearest) nearest = d;
+    if (s <= maxS + 1e-9) {
+      const cost = d + HEAD_COST * (prey.total - s);
+      if (cost < bestCost && i < t.length) { bestCost = cost; best = i; cutS = s; }
+    }
+  }
+  prey.nearest = nearest;
+  return best;
+}
+
+/** Can this bot (alive, not burning, short trail) hunt with smartHunt at all? */
+const canHunt = (world: World, p: Player) => !p.burn && trailLen(p) <= DIFFICULTY[world.difficulty].cautionTrail;
+
+/**
+ * Pack hunting (Hard): every PACK_EVAL_S of world time, the packSize bots closest to the
+ * human's trail that could hunt it right now are committed (slots 0.., closest first);
+ * everyone else keeps expanding. The state lives in the brains (pack, packAt, packDist).
+ */
+function evaluatePack(world: World, brains: Map<number, BotBrain>, tune: DifficultyTuning): void {
+  let due = false;
+  for (const b of brains.values()) {
+    if (b.packAt === undefined || world.time - b.packAt >= PACK_EVAL_S - 1e-9) { due = true; break; }
+  }
+  if (!due) return;
+  for (const p of world.players) {
+    if (p.isHuman) continue;
+    const b = brains.get(p.id);
+    if (!b) continue;
+    b.pack = -1;
+    b.packAt = world.time;
+    b.packDist = p.alive && canHunt(world, p) && smartTarget(world, p, tune, 0) ? prey.nearest : Infinity;
+  }
+  for (let k = 0; k < tune.packSize; k++) {
+    let pick: BotBrain | null = null;
+    for (const b of brains.values()) {
+      if (b.pack === -1 && b.packDist !== undefined && b.packDist < (pick?.packDist ?? Infinity)) pick = b;
+    }
+    if (!pick) break;
+    pick.pack = k;
+  }
+}
+
+/**
+ * Safe return (Hard): is a rival head (the human or a bot) nearer some point of p's trail
+ * than p is to its own land (plus SAFE_MARGIN)? Rivals are culled on the trail's bounding box.
+ */
+function trailThreatened(world: World, p: Player): boolean {
+  const t = p.trail;
+  if (t.length === 0) return false;
+  const home = nearestOnLand(p);
+  if (!home) return false;
+  const thr = dist(home, p.pos) + SAFE_MARGIN;
+  const thr2 = thr * thr;
+  let minX = p.pos.x, maxX = minX, minY = p.pos.y, maxY = minY;
+  for (let i = 0; i < t.length; i++) {
+    const a = t[i];
+    if (a.x < minX) minX = a.x; else if (a.x > maxX) maxX = a.x;
+    if (a.y < minY) minY = a.y; else if (a.y > maxY) maxY = a.y;
+  }
+  for (const r of world.players) {
+    if (r === p || !r.alive) continue;
+    const qx = r.pos.x, qy = r.pos.y;
+    const bx = qx < minX ? minX - qx : qx > maxX ? qx - maxX : 0;
+    const by = qy < minY ? minY - qy : qy > maxY ? qy - maxY : 0;
+    if (bx * bx + by * by > thr2) continue;
+    for (let i = 0; i < t.length; i++) {
+      const dx = t[i].x - qx, dy = t[i].y - qy;
+      if (dx * dx + dy * dy < thr2) return true;
+    }
+  }
+  return false;
+}
+
 /** Does a ray along `ang` cross this bot's own (dangerous part of its) trail within SELF_LOOKAHEAD? */
 function crossesOwnTrail(p: Player, ang: number): boolean {
   const t = p.trail;
@@ -174,7 +403,8 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
   const human = world.players[world.humanId];
   const inside = landContains(p.land, p.pos);
   const tl = trailLen(p);
-  const cautionTrail = DIFFICULTY[world.difficulty].cautionTrail;
+  const tune = DIFFICULTY[world.difficulty];
+  const cautionTrail = tune.cautionTrail;
 
   if (brain.state === 'hunt') brain.state = 'return';
 
@@ -182,15 +412,22 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
   if (tl > cautionTrail && human.alive && dist(human.pos, p.pos) < CAUTION_HUMAN_DIST) {
     brain.state = 'return';
   }
-  if (brain.state === 'out' && tl > MAX_TRAIL_LEN) brain.state = 'return';
+  if (brain.state === 'out' && tl > MAX_TRAIL_LEN * tune.loopScale) brain.state = 'return';
+  // Safe return: a rival head could reach the trail before this bot gets home.
+  if (tune.safeReturn && brain.state === 'out' && trailThreatened(world, p)) brain.state = 'return';
   // Own trail burning: race the burn home; no hunting.
   if (p.burn) brain.state = 'return';
 
   // Hunt overrides, unless carrying a long trail or burning.
-  const prey = tl <= cautionTrail && !p.burn ? huntTarget(world, p, human) : null;
-  if (prey) {
+  let aim: Vec | null = null;
+  if (tl <= cautionTrail && !p.burn) {
+    if (!tune.smartHunt) aim = huntTarget(world, p, human);
+    else if (tune.packSize <= 0) aim = smartTarget(world, p, tune, 0);
+    else if ((brain.pack ?? -1) >= 0) aim = smartTarget(world, p, tune, brain.pack!);
+  }
+  if (aim) {
     brain.state = 'hunt';
-    return finish(p, steerTo(p, prey));
+    return finish(p, dodgeHead(world, p, tune, steerTo(p, aim)));
   }
 
   if (brain.state === 'return' && inside && p.trail.length === 0) brain.state = 'home';
@@ -209,7 +446,30 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
     target = inside && p.trail.length > 0 ? p.pos : nearestOnLand(p);
     if (!target) target = { x: 0, y: 0 };
   }
-  return finish(p, target ? steerTo(p, target) : p.heading);
+  return finish(p, dodgeHead(world, p, tune, target ? steerTo(p, target) : p.heading));
+}
+
+/**
+ * Smart bots (Hard) never trade heads with the human: if, at current headings and speed, the
+ * two heads would pass within DODGE_MISS in the next DODGE_T seconds, the bot steers straight
+ * away from where the human's head will be at the closest point (the human can't catch up
+ * from behind at the same speed).
+ */
+function dodgeHead(world: World, p: Player, tune: DifficultyTuning, ang: number): number {
+  if (!tune.smartHunt) return ang;
+  const h = world.players[world.humanId];
+  if (!h.alive) return ang;
+  const rx = h.pos.x - p.pos.x, ry = h.pos.y - p.pos.y;
+  const reach = DODGE_MISS + 2 * CONFIG.SPEED * DODGE_T;
+  if (rx * rx + ry * ry > reach * reach) return ang;
+  const vx = (Math.cos(h.heading) - Math.cos(p.heading)) * CONFIG.SPEED;
+  const vy = (Math.sin(h.heading) - Math.sin(p.heading)) * CONFIG.SPEED;
+  const v2 = vx * vx + vy * vy;
+  const t = v2 > 1e-9 ? Math.min(DODGE_T, Math.max(0, -(rx * vx + ry * vy) / v2)) : 0;
+  const mx = rx + vx * t, my = ry + vy * t;
+  if (mx * mx + my * my >= DODGE_MISS * DODGE_MISS) return ang;
+  const hx = h.pos.x + Math.cos(h.heading) * CONFIG.SPEED * t, hy = h.pos.y + Math.sin(h.heading) * CONFIG.SPEED * t;
+  return Math.atan2(p.pos.y - hy, p.pos.x - hx);
 }
 
 function finish(p: Player, ang: number): number {
@@ -229,6 +489,11 @@ export function botInputs(
   rng: () => number,
 ): Map<number, Input> {
   const out = new Map<number, Input>();
+  const tune = DIFFICULTY[world.difficulty];
+  if (tune.smartHunt) {
+    scanPrey(world);
+    if (tune.packSize > 0) evaluatePack(world, brains, tune);
+  }
   for (const p of world.players) {
     if (p.isHuman) continue;
     let brain = brains.get(p.id);
@@ -239,6 +504,7 @@ export function botInputs(
       brain.waypoints = [];
       brain.name = p.name;
       brain.alive = true;
+      if (brain.pack !== undefined) brain.pack = -1;
     }
     out.set(p.id, { targetHeading: think(world, p, brain, rng) });
   }

@@ -1,5 +1,7 @@
 import type { GameEvent, World } from '../sim/types';
 import { pct } from '../sim/world';
+import { landArea } from '../sim/territory';
+import { waveSeconds } from './waves';
 import { MAX_STREAK, type SoundName, type SoundOpts } from './sound';
 
 /** One sound to play, with its options (see playSound). */
@@ -11,8 +13,8 @@ export const STREAK_WINDOW_S = 8;
 export const MILESTONES = [10, 25, 50];
 
 /** Steal swipe first, then the capture chord, then the relief chime, then any fanfare. */
-const CAPTURE_AFTER_STEAL_S = 0.07;
-const ESCAPE_AFTER_CAPTURE_S = 0.12;
+export const CAPTURE_AFTER_STEAL_S = 0.07;
+export const ESCAPE_AFTER_CAPTURE_S = 0.12;
 const MILESTONE_AFTER_CAPTURE_S = 0.28;
 
 /**
@@ -45,6 +47,10 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
   const human = world.humanId;
   const h = world.players[human];
   const out = new Map<SoundName, Cue>();
+  /** Where the human's own moments happen (a copy: the live position moves on). */
+  const head = () => ({ x: h.pos.x, y: h.pos.y });
+  /** The last rival the human knocked out this step: the kill is heard where it fell. */
+  let victim: number | null = null;
   const add = (c: Cue) => { if (!out.has(c.name)) out.set(c.name, c); };
 
   // Revive shield: protectedUntil jumps forward at a revive, and the shield ends once
@@ -61,6 +67,8 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
   }
 
   let capturePct = 0;
+  /** The largest region the human took this step: the capture sweep lasts as long as its wave. */
+  let captureArea = 0;
   let stole = false;
   let kills = 0;
   for (const e of events) {
@@ -68,6 +76,7 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
       case 'capture':
         if (e.playerId === human && e.gainedPct > 0) {
           capturePct += e.gainedPct;
+          captureArea = Math.max(captureArea, landArea(e.region));
           if (e.stolen.length > 0) stole = true;
         }
         break;
@@ -75,6 +84,7 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
         // Taking a victim's land sounds like stealing it.
         if (e.playerId === human && e.gainedPct > 0) {
           capturePct += e.gainedPct;
+          captureArea = Math.max(captureArea, landArea(e.region));
           stole = true;
         }
         break;
@@ -82,12 +92,16 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
         if (e.playerId === human) add({ name: 'escape' });
         break;
       case 'cut':
-        if (e.hitterId === human) add({ name: 'cut' });
-        else if (e.victimId === human) add({ name: 'burning' });
+        // The hit point is where the human's head crossed the trail.
+        if (e.hitterId === human) add({ name: 'cut', at: head() });
+        else if (e.victimId === human) add({ name: 'burning', at: head() });
         break;
       case 'death':
         // The human's own final death is covered by 'down' / 'gameover'.
-        if (e.playerId !== human && e.killerId === human) kills++;
+        if (e.playerId !== human && e.killerId === human) {
+          kills++;
+          victim = e.playerId;
+        }
         break;
       case 'down':
         add({ name: 'down' });
@@ -108,18 +122,19 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
       state.streak = quick ? Math.min(MAX_STREAK, state.streak + 1) : 0;
       state.lastKillAt = world.time;
     }
-    add({ name: 'kill', streak: state.streak });
+    const v = world.players[victim!].pos;
+    add({ name: 'kill', streak: state.streak, at: { x: v.x, y: v.y } });
   }
 
   if (capturePct > 0) {
-    const at = stole ? CAPTURE_AFTER_STEAL_S : 0;
-    if (stole) add({ name: 'steal' });
-    add({ name: 'capture', pct: capturePct, delay: at });
+    const t0 = stole ? CAPTURE_AFTER_STEAL_S : 0;
+    if (stole) add({ name: 'steal', at: head() });
+    add({ name: 'capture', pct: capturePct, delay: t0, durationS: waveSeconds(captureArea), at: head() });
     const esc = out.get('escape');
     if (esc) {
       // Re-insert so the relief chime follows the chord.
       out.delete('escape');
-      add({ ...esc, delay: at + ESCAPE_AFTER_CAPTURE_S });
+      add({ ...esc, delay: t0 + ESCAPE_AFTER_CAPTURE_S });
     }
     // Only the highest milestone newly passed plays; the ones it skipped are spent too.
     const now = pct(world, human);
@@ -127,7 +142,7 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
     while (passed < MILESTONES.length && now >= MILESTONES[passed]) passed++;
     if (passed > state.milestones) {
       state.milestones = passed;
-      add({ name: 'milestone', tier: passed - 1, delay: at + MILESTONE_AFTER_CAPTURE_S });
+      add({ name: 'milestone', tier: passed - 1, delay: t0 + MILESTONE_AFTER_CAPTURE_S });
     }
   }
 

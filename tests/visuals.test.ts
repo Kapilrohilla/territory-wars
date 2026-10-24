@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ASH_FADE_LEN, SHIELD_FADE_S, ashAlpha, headAlpha, nearestPointOnLand, pointOnTrail,
-  shieldAlpha, shieldFraction, vignetteAlpha,
+  shieldAlpha, shieldFraction,
   roundedCorners, CORNER_R,
 } from '../src/game/render';
 import { createWorld } from '../src/sim/world';
@@ -73,19 +73,6 @@ describe('shield', () => {
       expect(headAlpha(w, h)).toBeGreaterThanOrEqual(0.75);
     }
     expect(headAlpha(w, h, true)).toBe(1);
-  });
-});
-
-describe('vignetteAlpha', () => {
-  it('pulses at about 1.5 Hz', () => {
-    expect(vignetteAlpha(0, false)).toBeCloseTo(vignetteAlpha(1 / 1.5, false));
-    expect(vignetteAlpha(1 / 6, false)).toBeGreaterThan(vignetteAlpha(1 / 2, false) + 0.2); // peak vs trough
-  });
-  it('is steady and no brighter than the pulse peak under reduced motion', () => {
-    let max = 0;
-    for (let t = 0; t < 1; t += 0.01) max = Math.max(max, vignetteAlpha(t, false));
-    expect(vignetteAlpha(0, true)).toBe(vignetteAlpha(0.37, true));
-    expect(vignetteAlpha(0, true)).toBeLessThan(max);
   });
 });
 

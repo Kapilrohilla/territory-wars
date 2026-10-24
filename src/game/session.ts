@@ -8,11 +8,16 @@ import { createInput } from './input';
 import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
 import { drawMinimap } from './minimap';
-import { createSfxState, soundsFor } from './sfxEvents';
-import { playSound } from './sound';
-import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
+import { createSfxState, soundsFor, type Cue } from './sfxEvents';
+import { currentListener, playSound, setListener } from './sound';
+import { createFx, interpPos, prefersReducedMotion, render, snapshotFx, type Fx } from './render';
 import { createMoodState, moodEvents, moodOf } from './moods';
 import { botSkin, faceFor, skinById } from './skins';
+import { createDangerState, sampleDanger, type DangerState } from './danger';
+import { createOverlay, type Rect } from './overlay';
+import { createTension } from './tension';
+import { createThreatAlert, findThreats, tickThreatAlert, type Threat } from './threats';
+import { createHitStop, DOWN_DELAY_MS, downTimeScale, HITSTOP_SCALE, impactEnabled } from './impact';
 
 export type SessionOpts = {
   seed?: number;
@@ -38,13 +43,32 @@ export type SessionOpts = {
   onDown?: (world: World, killerName: string | null) => void;
   /** Asked before each revive; it only happens on true. The hook for a future rewarded ad. */
   requestRevive?: () => Promise<boolean>;
+  /**
+   * Screen rects (CSS px) of the HUD cards that threat arrows and their tooltip keep clear
+   * of. Read on resize and about once a second (the leaderboard grows), never per frame.
+   */
+  hudRects?: () => readonly Rect[];
+  /**
+   * Every sound cue as it plays (even when muted), for HUD reactions that follow the same
+   * moments: a human 'capture' bumps the % card, a 'milestone' shows the ribbon, a 'kill'
+   * (with its quick-kill `streak`) shows the KNOCKOUT! banner.
+   */
+  onCue?: (cue: Cue) => void;
 };
+
+/** How often (ms) the HUD rects are re-read while the round runs. */
+const HUD_RECTS_MS = 1000;
 
 export type Session = {
   world: World;
   camera: Camera;
   fx: Fx;
   effects: Effects;
+  /**
+   * This frame's danger sample (level is 0 with danger warnings off), shared by the overlay,
+   * the tension sounds and the HUD so they always agree.
+   */
+  readonly danger: DangerState;
   /** Human's % at the moment the game ended (land at death, before the shrink). */
   finalPct(): number;
   start(): void;
@@ -69,7 +93,9 @@ export type Session = {
 /** How long the game keeps rendering after it ends, before onOver. */
 export const OVER_TAIL_MS = 1200;
 /** Delay between the knock-out and onDown, so the hit is visible first. */
-export const DOWN_DELAY_MS = 600;
+export { DOWN_DELAY_MS };
+/** Zoom punch on a knockout by the human: 12% in, springing back (camera.punch). */
+const KO_PUNCH = 0.12;
 const MAX_DPR = 2;
 
 /** Wires world + bots + input + loop + camera + renderer + effects onto a canvas. */
@@ -106,7 +132,15 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const skins = world.players.map((p) => (p.isHuman ? humanSkin : botSkin(p.id, p.colorIndex, seed)));
   fx.faceOf = (p) => faceFor(skins[p.id] ?? humanSkin, moodOf(p, world, moods));
   const effects = createEffects();
+  // Danger is sampled once per frame and shared by the overlay and the tension sounds.
+  const danger = createDangerState();
+  // Rivals closing on the human's trail, also once per frame (empty with warnings off).
+  const threats: Threat[] = [];
+  fx.threats = threats;
+  const threatAlert = createThreatAlert();
   const input = createInput(canvas);
+  const overlay = createOverlay(danger, threats, (p) => fx.faceOf!(p), input);
+  const tension = createTension();
   let inputDisposed = false;
   const disposeInput = () => {
     if (inputDisposed) return;
@@ -121,7 +155,15 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const paint = (alpha: number) => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     render(ctx, world, camera, alpha, fx, effects);
-    if (miniCtx && miniSize > 0) drawMinimap(miniCtx, world, miniSize, dpr, alpha, camera);
+    overlay.draw(ctx, camera);
+    if (miniCtx && miniSize > 0) drawMinimap(miniCtx, world, miniSize, dpr, alpha, camera, threats);
+  };
+
+  let hudRectsAt = -Infinity;
+  const refreshHudRects = () => {
+    if (!opts.hudRects) return;
+    hudRectsAt = performance.now();
+    overlay.setAvoid(opts.hudRects());
   };
 
   const resize = () => {
@@ -137,12 +179,15 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       mini.width = Math.round(miniSize * dpr);
       mini.height = Math.round(miniSize * dpr);
     }
+    refreshHudRects();
     // Resizing clears the canvas; repaint so it never goes blank while stopped or frozen.
     if (!running || world.awaitingRevive) paint(lastAlpha);
   };
   // Camera must be placed before the first paint.
   camera.update(world.players[world.humanId].pos, pct(world, world.humanId), 0);
   resize();
+  // Directional sound: positioned cues are heard from this camera and the human's head.
+  setListener(camera, () => world.players[world.humanId].pos);
   window.addEventListener('resize', resize);
 
   let lastFrame: number | null = null;
@@ -150,15 +195,34 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   let overNotified = false;
   let finalPct = 0;
 
+  // Knockout hit-stop and zoom punch; they and the capture/kill nudges respect the
+  // "screen shake & freeze-frames" setting and reduce motion (read per event, not per frame).
+  const hitStop = createHitStop();
+  const impactOn = () => impactEnabled() && !prefersReducedMotion();
+  const effectsCam = { nudge: (strength: number) => { if (impactOn()) camera.nudge(strength); } };
   const sfx = createSfxState();
   const notifyEvents = () => {
     // world.events only holds the latest step's (or revive call's) events.
     if (world.events.length) {
-      effects.onEvents(world.events, world, camera);
+      effects.onEvents(world.events, world, effectsCam);
+      for (const e of world.events) {
+        if (e.type === 'death' && e.killerId === world.humanId && e.playerId !== world.humanId) {
+          if (impactOn()) {
+            // Steps stop for HITSTOP_MS (the loop's canStep gate); rendering carries on.
+            hitStop.trigger(performance.now());
+            camera.punch(KO_PUNCH);
+          }
+          break;
+        }
+      }
       moodEvents(world.events, world, moods);
     }
     // Every step, even a silent one: the revive shield's end is a state edge, not an event.
-    for (const cue of soundsFor(world.events, world, sfx)) playSound(cue.name, cue);
+    for (const cue of soundsFor(world.events, world, sfx)) {
+      playSound(cue.name, cue);
+      tension.heard(cue.name, cue.delay);
+      opts.onCue?.(cue);
+    }
   };
   /** The human's share on the last step it was alive (see finalSharePct). */
   let alivePct = 0;
@@ -167,6 +231,8 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   // Knocked out: the world is frozen behind the revive offer; rendering goes on.
   let downAt: number | null = null;
   let downNotified = false;
+  /** The down slow-mo's gate (impact setting and reduce motion), cached when the down starts. */
+  let downSlowOn = false;
   let reviveRequested = false;
   /** The settled frozen frame has been painted; later frames skip painting until unfrozen. */
   let frozenPainted = false;
@@ -189,20 +255,39 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     // Once over (or frozen), nothing steps: pin interpolation so survivors don't wobble.
     const a = world.over || world.awaitingRevive ? 1 : alpha;
     lastAlpha = a;
-    effects.update(dt);
+    if (world.awaitingRevive && downAt === null) {
+      downAt = now;
+      downSlowOn = impactOn(); // read once on the down edge, not per frame
+    }
+    // Slow-mo through the down (before the revive offer); effects crawl during a hit-stop.
+    const slow = downNotified || downAt === null ? 1 : downTimeScale(now - downAt, downSlowOn);
+    const fxScale = hitStop.shouldStep(now) ? slow : Math.min(slow, HITSTOP_SCALE);
+    effects.update(dt * fxScale);
+    if (now - hudRectsAt >= HUD_RECTS_MS) refreshHudRects();
+    sampleDanger(world, danger);
+    // Real time, and only while the loop runs: silent when paused (no frames), and the
+    // controller itself goes quiet behind the revive offer and once the round is over.
+    tension.update(world, dt, danger);
+    if (danger.warnings) findThreats(world, threats);
+    else threats.length = 0;
+    // Heard from the side the rival is coming from (threats[0] is the one it fired for).
+    if (tickThreatAlert(threatAlert, threats, dt)) playSound('alert', { at: threats[0].pos });
     // Frozen behind the revive modal with no effect left to play: the frame is static under
     // the blurred overlay, so skip repainting it (resize still repaints). Painting resumes
     // after revive()/giveUp(), which clear awaitingRevive.
     const idleFrozen = world.awaitingRevive && !effects.busy();
     if (!idleFrozen || !frozenPainted) {
       const human = world.players[world.humanId];
-      camera.update(interpPos(human, a), pct(world, world.humanId), dt);
+      camera.update(interpPos(human, a), pct(world, world.humanId), dt * slow);
+      overlay.update(world, camera, dt, a);
+      // Real frame time for the head lean; repaints outside the loop (resize) pass none.
+      fx.frameDt = dt;
       paint(a);
+      fx.frameDt = 0;
     }
     frozenPainted = idleFrozen; // one paint after the effects settle, then none
 
-    if (world.awaitingRevive && !downNotified) {
-      if (downAt === null) downAt = now;
+    if (world.awaitingRevive && !downNotified && downAt !== null) {
       if (now - downAt >= DOWN_DELAY_MS) {
         downNotified = true;
         const k = world.downKillerId;
@@ -223,7 +308,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     }
   };
 
-  const loop = createLoop(stepFn, renderFn, CONFIG.DT);
+  const loop = createLoop(stepFn, renderFn, CONFIG.DT, (nowMs) => hitStop.shouldStep(nowMs));
 
   function stop() {
     running = false;
@@ -237,12 +322,14 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     pause() {
       if (disposed || paused || !running || world.over || world.awaitingRevive) return false;
       paused = true;
+      hitStop.clear();
       stop();
       return true;
     },
     resume() {
       if (disposed || !paused) return;
       paused = false;
+      hitStop.clear();
       running = true;
       lastFrame = null;
       loop.start();
@@ -251,6 +338,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     camera,
     fx,
     effects,
+    danger,
     finalPct: () => finalPct,
     start() {
       if (disposed || running || overNotified || paused) return;
@@ -262,7 +350,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     dispose() {
       if (disposed) return;
       disposed = true;
+      hitStop.clear();
       stop();
+      tension.dispose();
+      if (currentListener() === camera) setListener(null);
       window.removeEventListener('resize', resize);
       disposeInput();
     },

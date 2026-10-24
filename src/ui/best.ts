@@ -1,4 +1,5 @@
 import type { Difficulty } from '../sim/config';
+import { safeStorage } from './settings';
 
 /** Best run so far (per difficulty), kept in localStorage. */
 export type BestScore = { pct: number; kills: number; time: number };
@@ -35,7 +36,7 @@ function migrateLegacy(store: Store | undefined): void {
 
 export function loadBest(
   difficulty: Difficulty,
-  store: Store | undefined = globalThis.localStorage,
+  store: Store | undefined = safeStorage(),
 ): BestScore | null {
   try {
     migrateLegacy(store);
@@ -52,7 +53,7 @@ export function loadBest(
 export function recordRun(
   run: BestScore,
   difficulty: Difficulty,
-  store: Store | undefined = globalThis.localStorage,
+  store: Store | undefined = safeStorage(),
 ): boolean {
   if (!isBetter(run, loadBest(difficulty, store))) return false;
   try {

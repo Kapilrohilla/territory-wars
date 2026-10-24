@@ -4,8 +4,10 @@ import type { Player, World } from '../sim/types';
 import type { Camera } from './camera';
 import { SPAWN_HEIGHT, type Effects, type HeadPose } from './effects';
 import { drawFace, drawFaceBack } from './faces';
+import { SQUASH, SWOOSH_K, createLeanState, stepLean, type LeanState } from './lean';
 import type { Face } from './skins';
 import { PALETTE } from './palette';
+import type { Threat } from './threats';
 
 export const LIP_OFFSET = 0.35;
 const TRAIL_WIDTH = 0.6;
@@ -21,10 +23,22 @@ export type Fx = {
   prevHeading: Map<number, number>;
   /** The face each head shows this frame (skin + mood); faceless heads when unset. */
   faceOf?: (p: Player) => Face;
+  /**
+   * This frame's threats to the human's trail (threats.ts), closest first; the session
+   * leaves it empty while danger warnings are off. Close ones glow on the trail.
+   */
+  threats?: readonly Threat[];
+  /**
+   * Real seconds since the previous painted frame, set by the session around each frame's
+   * render (0 for repaints such as a resize, which then leave the lean poses alone).
+   */
+  frameDt?: number;
+  /** Each head's smoothed lean/squash into turns (lean.ts). */
+  lean: Map<number, LeanState>;
 };
 
 export function createFx(): Fx {
-  return { prevHeading: new Map() };
+  return { prevHeading: new Map(), lean: new Map() };
 }
 
 /** Call right before each sim step. */
@@ -197,14 +211,6 @@ export function shieldAlpha(remaining: number): number {
   return u * u * (3 - 2 * u);
 }
 
-const VIGNETTE_HZ = 1.5;
-
-/** Burning-trail screen-edge vignette opacity: a slow pulse, or a lower steady glow under reduced motion. */
-export function vignetteAlpha(time: number, reduced: boolean): number {
-  if (reduced) return 0.3;
-  return 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(time * VIGNETTE_HZ * Math.PI * 2));
-}
-
 /** Path length over which an ash dot fades after a burn front passes it. */
 export const ASH_FADE_LEN = 6;
 
@@ -218,33 +224,8 @@ export function ashAlpha(x: number, s0: number, back: number, front: number): nu
   return clamp01(1 - behind / ASH_FADE_LEN);
 }
 
-/**
- * Nearest point to p on the boundary of land (every ring), written to out. Returns the
- * distance, or Infinity (out untouched) for empty land. For a p outside the land, that
- * is the nearest point of the land itself.
- */
-export function nearestPointOnLand(land: MultiPoly, p: Vec, out: { x: number; y: number }): number {
-  let best = Infinity, bx = 0, by = 0;
-  for (const poly of land) {
-    for (const ring of poly) {
-      const n = ring.length;
-      if (n === 0) continue;
-      for (let i = 0, j = n - 1; i < n; j = i++) {
-        const a = ring[j], b = ring[i];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const len2 = dx * dx + dy * dy;
-        const k = len2 > 0 ? clamp01(((p.x - a.x) * dx + (p.y - a.y) * dy) / len2) : 0;
-        const x = a.x + dx * k, y = a.y + dy * k;
-        const d2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-        if (d2 < best) { best = d2; bx = x; by = y; }
-      }
-    }
-  }
-  if (best === Infinity) return Infinity;
-  out.x = bx;
-  out.y = by;
-  return Math.sqrt(best);
-}
+/** Nearest boundary point of a land; lives in danger.ts (kept exported here for callers). */
+export { nearestPointOnLand } from './danger';
 
 // Dying land is drawn (shrinking) by the effects layer, not here.
 function drawLands(ctx: CanvasRenderingContext2D, world: World, effects?: Effects): void {
@@ -435,6 +416,101 @@ function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec, time: nu
   }
 }
 
+/** A threat closer than this (u) lights up the human's trail. */
+export const THREAT_GLOW_DIST = 10;
+/** The glow covers this much path length (u) either side of the threatened point. */
+const THREAT_GLOW_HALF = 3;
+const THREAT_GLOW_W = 0.9;
+const THREAT_RIPPLE_HZ = 3;
+const THREAT_RIPPLE_R0 = 0.45;
+const THREAT_RIPPLE_GROW = 0.9;
+const THREAT_BADGE_R = 0.36;
+
+/** Glow opacity for a threat at distance d: 0.6 right on the trail, 0 at THREAT_GLOW_DIST. */
+export function threatGlowAlpha(d: number): number {
+  return 0.6 * clamp01(1 - d / THREAT_GLOW_DIST);
+}
+
+/** Adds the stretch of trail + head between path lengths a and b (from trail[0]) as one sub-path. */
+function addTrailRange(ctx: CanvasRenderingContext2D, trail: Vec[], head: Vec, a: number, b: number): void {
+  let acc = 0;
+  let started = false;
+  for (let i = 0; i < trail.length; i++) {
+    const p = trail[i], q = i + 1 < trail.length ? trail[i + 1] : head;
+    const len = Math.hypot(q.x - p.x, q.y - p.y);
+    const end = acc + len;
+    if (end >= a && len > 0) {
+      if (!started) {
+        const k = clamp01((a - acc) / len);
+        ctx.moveTo(p.x + (q.x - p.x) * k, p.y + (q.y - p.y) * k);
+        started = true;
+      }
+      if (end >= b) {
+        const k = clamp01((b - acc) / len);
+        ctx.lineTo(p.x + (q.x - p.x) * k, p.y + (q.y - p.y) * k);
+        return;
+      }
+      ctx.lineTo(q.x, q.y);
+    }
+    acc = end;
+  }
+}
+
+/** Ember glow on the human's trail around each close threat's nearest point (world space). */
+function drawThreatGlow(ctx: CanvasRenderingContext2D, trail: Vec[], head: Vec, threats: readonly Threat[]): void {
+  ctx.lineWidth = THREAT_GLOW_W;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = EMBER_CORE;
+  for (const t of threats) {
+    const a = threatGlowAlpha(t.dist);
+    if (a <= 0) continue;
+    ctx.beginPath();
+    addTrailRange(ctx, trail, head, Math.max(0, t.trailS - THREAT_GLOW_HALF), t.trailS + THREAT_GLOW_HALF);
+    ctx.globalAlpha = a;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** A small "!" badge with a ripple ring at each close threat's trail point; 3 Hz, static when reduced. */
+function drawThreatRipples(ctx: CanvasRenderingContext2D, threats: readonly Threat[], time: number, reduced: boolean): void {
+  for (const t of threats) {
+    const strength = clamp01(1 - t.dist / THREAT_GLOW_DIST);
+    if (strength <= 0) continue;
+    const { x, y } = t.trailPoint;
+    const phase = reduced ? 0.5 : (time * THREAT_RIPPLE_HZ) % 1;
+    ctx.beginPath();
+    ctx.arc(x, y, THREAT_RIPPLE_R0 + THREAT_RIPPLE_GROW * phase, 0, Math.PI * 2);
+    ctx.strokeStyle = EMBER_CORE;
+    ctx.lineWidth = 0.12;
+    ctx.globalAlpha = (reduced ? 0.6 : 1 - phase) * Math.min(1, 0.4 + strength);
+    ctx.stroke();
+    ctx.globalAlpha = Math.min(1, 0.5 + strength);
+    // The badge: white disc, ember rim, ink "!".
+    ctx.beginPath();
+    ctx.arc(x, y, THREAT_BADGE_R, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.lineWidth = 0.08;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y - THREAT_BADGE_R * 0.55);
+    ctx.lineTo(x, y + THREAT_BADGE_R * 0.12);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 0.1;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y + THREAT_BADGE_R * 0.5, 0.055, 0, Math.PI * 2);
+    ctx.fillStyle = INK;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+const INK = '#34323F';
+
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -478,27 +554,59 @@ function drawHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: 
 }
 
 /**
- * Draws a head in its spawn pose: lifted above its spot (with a ground shadow that darkens
- * as it lands), scaled about its base so a squash stays on the ground.
+ * Draws a head in its spawn pose (pose, may be null) leaning `lean` rad into a turn and
+ * squashed by `squash` (0..1). The spawn pose lifts the head above its spot (with a ground
+ * shadow that darkens as it lands); every scale and the lean pivot about the head's base so
+ * a squash stays on the ground. Spawn and turn scales multiply.
  */
 function drawPosedHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: number, face: Face | undefined,
-  pose: HeadPose): void {
-  const land = 1 - pose.lift / SPAWN_HEIGHT;
+  pose: HeadPose | null, lean: number, squash: number): void {
   const prevAlpha = ctx.globalAlpha;
-  ctx.globalAlpha = prevAlpha * 0.25 * land;
-  ctx.fillStyle = '#28283a';
-  ctx.beginPath();
-  ctx.ellipse(head.x, head.y + HEAD_SIDE, (HEAD_SIZE / 2) * (0.5 + 0.5 * land), (HEAD_SIZE / 4) * (0.5 + 0.5 * land),
-    0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = prevAlpha * pose.alpha;
+  let lift = 0, sx = 1 + SQUASH * squash, sy = 1 - SQUASH * squash;
+  if (pose) {
+    const land = 1 - pose.lift / SPAWN_HEIGHT;
+    ctx.globalAlpha = prevAlpha * 0.25 * land;
+    ctx.fillStyle = '#28283a';
+    ctx.beginPath();
+    ctx.ellipse(head.x, head.y + HEAD_SIDE, (HEAD_SIZE / 2) * (0.5 + 0.5 * land), (HEAD_SIZE / 4) * (0.5 + 0.5 * land),
+      0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = prevAlpha * pose.alpha;
+    lift = pose.lift;
+    sx *= pose.sx;
+    sy *= pose.sy;
+  }
   const baseY = head.y + HEAD_SIZE / 2 + HEAD_SIDE;
   ctx.save();
-  ctx.translate(head.x, baseY - pose.lift);
-  ctx.scale(pose.sx, pose.sy);
+  ctx.translate(head.x, baseY - lift);
+  if (lean !== 0) ctx.rotate(lean);
+  ctx.scale(sx, sy);
   ctx.translate(-head.x, -baseY);
   drawHead(ctx, p, head, heading, face);
   ctx.restore();
+  ctx.globalAlpha = prevAlpha;
+}
+
+/** Below this the lean/squash is invisible: the plain (cheaper) head path is used. */
+const POSE_EPS = 1e-3;
+
+/** Two small white arcs behind a head in a sharp turn; `strength` 0..1 fades them in. */
+function drawSwooshes(ctx: CanvasRenderingContext2D, head: Vec, heading: number, lean: number, strength: number): void {
+  const back = heading + Math.PI;
+  // The arcs bend toward the inside of the turn, following the path just travelled.
+  const skew = lean > 0 ? -0.35 : 0.35;
+  const prevAlpha = ctx.globalAlpha;
+  ctx.globalAlpha = prevAlpha * strength;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 0.12;
+  const cy = head.y + HEAD_SIDE / 2;
+  for (let i = 0; i < 2; i++) {
+    const r = 0.98 + i * 0.32, span = 0.42 - i * 0.1, mid = back + skew * (1 + i * 0.4);
+    ctx.beginPath();
+    ctx.arc(head.x, cy, r, mid - span, mid + span);
+    ctx.stroke();
+  }
   ctx.globalAlpha = prevAlpha;
 }
 
@@ -563,62 +671,6 @@ function drawShield(ctx: CanvasRenderingContext2D, head: Vec, remaining: number,
   ctx.globalAlpha = prevAlpha;
 }
 
-const HOME_ARROW_COLOR = '#B4232F';
-const HOME_ARROW_GAP = 1.1;
-const HOME_ARROW_MAX = 7;
-const HOME_ARROW_DOT = 0.7;
-const HOME_ARROW_HEAD = 0.55;
-const homeTarget = { x: 0, y: 0 };
-
-/** Dotted arrow from the head towards the nearest point of the player's own land. */
-function drawHomeArrow(ctx: CanvasRenderingContext2D, land: MultiPoly, head: Vec): void {
-  const d = nearestPointOnLand(land, head, homeTarget);
-  if (!(d > HOME_ARROW_GAP + HOME_ARROW_HEAD)) return; // no land, or already at the edge
-  const ux = (homeTarget.x - head.x) / d, uy = (homeTarget.y - head.y) / d;
-  const end = Math.min(d, HOME_ARROW_GAP + HOME_ARROW_MAX);
-  ctx.fillStyle = HOME_ARROW_COLOR;
-  const prevAlpha = ctx.globalAlpha;
-  ctx.globalAlpha = prevAlpha * 0.85;
-  ctx.beginPath();
-  for (let t = HOME_ARROW_GAP; t < end - HOME_ARROW_HEAD; t += HOME_ARROW_DOT) {
-    const x = head.x + ux * t, y = head.y + uy * t;
-    ctx.moveTo(x + 0.13, y);
-    ctx.arc(x, y, 0.13, 0, Math.PI * 2);
-  }
-  ctx.fill();
-  // Chevron head at the end.
-  const tx = head.x + ux * end, ty = head.y + uy * end;
-  const bx = tx - ux * HOME_ARROW_HEAD, by = ty - uy * HOME_ARROW_HEAD;
-  const w = HOME_ARROW_HEAD * 0.7;
-  ctx.beginPath();
-  ctx.moveTo(tx, ty);
-  ctx.lineTo(bx - uy * w, by + ux * w);
-  ctx.lineTo(bx + uy * w, by - ux * w);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = prevAlpha;
-}
-
-let vignette: CanvasGradient | null = null;
-
-/** Soft orange-red edge glow (screen space) while the human's own trail burns. */
-function drawBurnVignette(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, reduced: boolean): void {
-  // Built once in a unit square and stretched to the screen, so it hugs every edge (an ellipse).
-  if (!vignette) {
-    vignette = ctx.createRadialGradient(0, 0, 0.75, 0, 0, Math.SQRT2);
-    vignette.addColorStop(0, 'rgba(255, 122, 89, 0)');
-    vignette.addColorStop(0.45, 'rgba(255, 110, 80, 0.22)');
-    vignette.addColorStop(1, 'rgba(230, 70, 55, 0.5)');
-  }
-  ctx.save();
-  ctx.translate(w / 2, h / 2);
-  ctx.scale(w / 2, h / 2);
-  ctx.globalAlpha = vignetteAlpha(time, reduced);
-  ctx.fillStyle = vignette;
-  ctx.fillRect(-1, -1, 2, 2);
-  ctx.restore();
-}
-
 /**
  * Draws the world. Expects ctx's transform to map CSS pixels (DPR applied by
  * the caller) and `cam` to be updated for this frame.
@@ -633,6 +685,7 @@ export function render(
 ): void {
   effects?.observe(world);
   const reduced = prefersReducedMotion();
+  const frameDt = fx.frameDt ?? 0;
   ctx.fillStyle = PALETTE.bg;
   ctx.fillRect(0, 0, cam.viewW, cam.viewH);
 
@@ -649,12 +702,16 @@ export function render(
   const alive = shownHeads(world);
   const heads = new Map<number, Vec>();
   for (const p of alive) heads.set(p.id, interpPos(p, alpha));
-  for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!, world.time);
-  // Human last so it stays on top.
-  const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
   const human = world.players[world.humanId];
   const humanHead = human.alive ? heads.get(human.id) : undefined;
-  if (humanHead && human.burn) drawHomeArrow(ctx, human.land, humanHead);
+  const threats = fx.threats;
+  const glow = humanHead && human.trail.length > 0 && threats && threats.length > 0;
+  // Under the trails, so the glow reads as an ember outline around the human's ribbon.
+  if (glow) drawThreatGlow(ctx, human.trail, humanHead, threats);
+  for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!, world.time);
+  if (glow) drawThreatRipples(ctx, threats, world.time, reduced);
+  // Human last so it stays on top.
+  const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
   for (const p of order) {
     // The shield sits just under the human's head, so the head stays crisp inside it.
     if (p === human && humanHead && world.time < human.protectedUntil) {
@@ -663,7 +720,23 @@ export function render(
     ctx.globalAlpha = headAlpha(world, p, reduced);
     const pose = reduced ? null : effects?.headPose(p.id) ?? null;
     const head = heads.get(p.id)!, heading = interpHeading(fx, p, alpha), face = fx.faceOf?.(p);
-    if (pose) drawPosedHead(ctx, p, head, heading, face, pose);
+    let ls = fx.lean.get(p.id);
+    if (!ls) {
+      ls = createLeanState();
+      fx.lean.set(p.id, ls);
+    }
+    let lean = 0, squash = 0;
+    if (reduced) {
+      // No lean or squash; keep tracking the heading so turning it back on doesn't spike.
+      ls.heading = heading;
+      ls.lean = ls.k = 0;
+    } else {
+      stepLean(ls, heading, frameDt);
+      lean = ls.lean;
+      squash = ls.k;
+      if (p === human && squash > SWOOSH_K) drawSwooshes(ctx, head, heading, lean, (squash - SWOOSH_K) / (1 - SWOOSH_K));
+    }
+    if (pose || Math.abs(lean) > POSE_EPS || squash > POSE_EPS) drawPosedHead(ctx, p, head, heading, face, pose, lean, squash);
     else drawHead(ctx, p, head, heading, face);
   }
   ctx.globalAlpha = 1;
@@ -682,6 +755,5 @@ export function render(
     ctx.fillText(p.name, sp.x, sp.y);
   }
 
-  if (humanHead && human.burn) drawBurnVignette(ctx, cam.viewW, cam.viewH, world.time, reduced);
   effects?.draw(ctx, cam);
 }

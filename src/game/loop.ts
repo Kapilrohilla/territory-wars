@@ -1,4 +1,6 @@
 const MAX_ACCUM = 0.25;
+/** A held accumulator stays just under one step. */
+const HOLD = 1 - 1e-6;
 
 export type Loop = { tick(nowMs: number): void; start(): void; stop(): void };
 
@@ -11,6 +13,12 @@ export function createLoop(
   stepFn: () => void,
   renderFn: (alpha: number) => void,
   dt: number,
+  /**
+   * Optional freeze gate (a hit-stop): while it returns false no step runs and the frame time
+   * is dropped, so nothing is caught up afterwards; the accumulator is held below one step so
+   * the render alpha doesn't jump when the freeze starts or ends.
+   */
+  canStep?: (nowMs: number) => boolean,
 ): Loop {
   let last: number | null = null;
   let acc = 0;
@@ -21,10 +29,19 @@ export function createLoop(
     if (last === null) { last = nowMs; return; }
     const frame = Math.max(0, (nowMs - last) / 1000);
     last = nowMs;
-    acc = Math.min(acc + frame, MAX_ACCUM);
-    while (acc >= dt) {
-      stepFn();
-      acc -= dt;
+    if (canStep && !canStep(nowMs)) {
+      acc = Math.min(acc, dt * HOLD);
+    } else {
+      acc = Math.min(acc + frame, MAX_ACCUM);
+      while (acc >= dt) {
+        stepFn();
+        acc -= dt;
+        // A step may start a freeze (a knockout): the rest of this frame's steps are dropped.
+        if (canStep && !canStep(nowMs)) {
+          acc = Math.min(acc, dt * HOLD);
+          break;
+        }
+      }
     }
     renderFn(Math.min(Math.max(acc / dt, 0), 1 - 1e-9));
   }

@@ -1,4 +1,21 @@
-export type InputSource = { targetHeading(): number | null; dispose(): void };
+/**
+ * The joystick drag in CSS px (viewport coords): where it is anchored (the anchor trails the
+ * finger beyond MAX_RADIUS_PX) and where the pointer is now. `active` is true once the drag
+ * has left the dead zone (it is steering); `touch` is true for a touch/pen pointer.
+ */
+export type PointerState = {
+  anchor: { x: number; y: number };
+  current: { x: number; y: number };
+  active: boolean;
+  touch: boolean;
+};
+
+export type InputSource = {
+  targetHeading(): number | null;
+  /** The current drag, or null when none is active. Always the same (reused) object. */
+  pointer(): PointerState | null;
+  dispose(): void;
+};
 
 const DEAD_ZONE_PX = 8;
 /** Floating joystick: the anchor trails the pointer so reversing is instant. */
@@ -48,12 +65,17 @@ export function createInput(el: HTMLElement): InputSource {
   let ox = 0, oy = 0;
   const held = { l: false, r: false, u: false, d: false };
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  const ptr: PointerState = { anchor: { x: 0, y: 0 }, current: { x: 0, y: 0 }, active: false, touch: false };
 
   const onDown = (e: PointerEvent) => {
     if (pointerId !== null) return;
     pointerId = e.pointerId;
     ox = e.clientX;
     oy = e.clientY;
+    ptr.anchor.x = ptr.current.x = ox;
+    ptr.anchor.y = ptr.current.y = oy;
+    ptr.active = false;
+    ptr.touch = e.pointerType !== 'mouse';
     try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     e.preventDefault();
   };
@@ -61,11 +83,18 @@ export function createInput(el: HTMLElement): InputSource {
     if (e.pointerId !== pointerId) return;
     const dx = e.clientX - ox, dy = e.clientY - oy;
     const d = Math.hypot(dx, dy);
-    if (d > DEAD_ZONE_PX) heading = Math.atan2(dy, dx);
+    if (d > DEAD_ZONE_PX) {
+      heading = Math.atan2(dy, dx);
+      ptr.active = true;
+    }
     if (d > MAX_RADIUS_PX) {
       ox = e.clientX - (dx / d) * MAX_RADIUS_PX;
       oy = e.clientY - (dy / d) * MAX_RADIUS_PX;
     }
+    ptr.anchor.x = ox;
+    ptr.anchor.y = oy;
+    ptr.current.x = e.clientX;
+    ptr.current.y = e.clientY;
     e.preventDefault();
   };
   const onUp = (e: PointerEvent) => {
@@ -111,7 +140,9 @@ export function createInput(el: HTMLElement): InputSource {
 
   return {
     targetHeading: () => heading,
+    pointer: () => (pointerId === null ? null : ptr),
     dispose() {
+      pointerId = null;
       if (releaseTimer !== null) clearTimeout(releaseTimer);
       el.removeEventListener('pointerdown', onDown);
       el.removeEventListener('pointermove', onMove);

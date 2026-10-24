@@ -2,6 +2,7 @@ import { CONFIG } from '../sim/config';
 import type { World } from '../sim/types';
 import type { Camera } from './camera';
 import { PALETTE } from './palette';
+import type { Threat } from './threats';
 import { addTrailPath, interpPos, landPath, playerColors, shownHeads, shownLand } from './render';
 
 /** Gap between the arena edge and the minimap edge, in CSS px. */
@@ -9,6 +10,10 @@ const PAD_PX = 4;
 const BOT_DOT_PX = 2.5;
 const HUMAN_DOT_PX = 4;
 const TRAIL_PX = 1.5;
+/** Threat rivals' dots get a red ring this far out from the dot, in CSS px. */
+const THREAT_RING_GAP_PX = 1.8;
+const THREAT_RING_PX = 1.5;
+const THREAT_RING = '#B4232F';
 
 export type MinimapTransform = { scale: number; offset: number };
 
@@ -20,7 +25,8 @@ export function minimapTransform(sizePx: number, arenaR = CONFIG.ARENA_R, padPx 
 
 /**
  * Draws the whole arena: every player's land, live trails, heads (the human
- * larger, ringed in white) and the camera's current view rectangle.
+ * larger, ringed in white) and the camera's current view rectangle. Rivals in `threats`
+ * (threats.ts) get a red ring around their dot.
  * `ctx` is the minimap canvas context; `sizePx` its CSS size; `dpr` its pixel ratio.
  */
 export function drawMinimap(
@@ -30,6 +36,7 @@ export function drawMinimap(
   dpr: number,
   alpha: number,
   cam?: Camera,
+  threats?: readonly Threat[],
 ): void {
   const { scale: s, offset } = minimapTransform(sizePx);
   const R = CONFIG.ARENA_R;
@@ -93,6 +100,18 @@ export function drawMinimap(
     if (p.isHuman) {
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 1.5 / s;
+      ctx.stroke();
+    }
+  }
+  if (threats) {
+    ctx.strokeStyle = THREAT_RING;
+    ctx.lineWidth = THREAT_RING_PX / s;
+    for (const t of threats) {
+      const p = world.players[t.id];
+      if (!p || !p.alive) continue;
+      const h = interpPos(p, alpha);
+      ctx.beginPath();
+      ctx.arc(h.x, h.y, (BOT_DOT_PX + THREAT_RING_GAP_PX) / s, 0, Math.PI * 2);
       ctx.stroke();
     }
   }

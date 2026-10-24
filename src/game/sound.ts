@@ -5,6 +5,8 @@
  * or muted.
  */
 import type { Difficulty } from '../sim/config';
+import type { Vec } from '../sim/geometry';
+import { getDirectional, getSfxVolume, setDirectional as storeDirectional, setSfxVolume } from '../ui/settings';
 
 export type SoundName =
   | 'capture'    // you closed a loop (scaled by `pct`)
@@ -20,24 +22,44 @@ export type SoundName =
   | 'start'      // a round begins
   | 'win'
   | 'gameover'
-  | 'newBest';
+  | 'newBest'
+  | 'heartbeat'  // tension layer: a soft lub-dub (`gain` from tension.ts beatGain)
+  | 'crackle'    // tension layer: an ember crackle while your trail burns (`level` = burn progress)
+  | 'alert'      // a rival just became the closest threat to your trail (threats.ts)
+  | 'overtake';  // you passed a rival on the leaderboard
 
 export type SoundOpts = {
   /** capture: land gained, in % of the arena. */
   pct?: number;
+  /** capture: length (s) of the rising sweep under the chord, matching the capture wave (waves.ts). */
+  durationS?: number;
   /** kill: how many quick kills came before this one (0..4), one scale step each. */
   streak?: number;
   /** milestone: 0, 1, 2 for 10 %, 25 %, 50 %. */
   tier?: number;
+  /** crackle: burn progress (0..1), a little louder as the burn nears. */
+  level?: number;
+  /** heartbeat: peak gain of the main thump (the caller scales it with danger). */
+  gain?: number;
   /** Seconds to wait before the sound starts (to sequence sounds in one step). */
   delay?: number;
+  /**
+   * Where it happened in the world. With a listener set (setListener) the cue is panned
+   * toward its side of the screen and, when off-screen, quieter with distance.
+   */
+  at?: Vec;
 };
 
 /** Every voice stays under this peak gain. */
 export const MAX_GAIN = 0.09;
 
 const MUTE_KEY = 'territory-wars.muted';
-const MASTER_GAIN = 0.9;
+/** Master gain at 100 % volume. */
+export const MASTER_GAIN = 0.9;
+/** Stereo spread: an event at the screen edge pans this far (not hard left/right). */
+export const PAN_MAX = 0.7;
+/** Positioned cues quieter than this (far off-screen) are not played at all. */
+const MIN_SPATIAL_GAIN = 0.01;
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -45,6 +67,9 @@ let failed = false;
 /** Added to every voice's start time while a sound is being built (SoundOpts.delay). */
 let offset = 0;
 let muted = loadMuted();
+/** The sound effects volume as a 0..1 factor on MASTER_GAIN (the 0–100 slider / 100). */
+let volume = volumeToGain(getSfxVolume());
+let directional = getDirectional();
 
 type AudioCtor = { new (): AudioContext };
 
@@ -63,7 +88,121 @@ export function isMuted(): boolean {
 export function setMuted(m: boolean): void {
   muted = m;
   try { globalThis.localStorage?.setItem(MUTE_KEY, m ? '1' : '0'); } catch { /* storage unavailable */ }
-  if (master && ctx) master.gain.setTargetAtTime(m ? 0 : MASTER_GAIN, ctx.currentTime, 0.02);
+  applyMaster();
+}
+
+/** The 0–100 volume slider as a gain factor 0..1 (linear, clamped; NaN → the 80 default). */
+export function volumeToGain(v: number): number {
+  if (!Number.isFinite(v)) return 0.8;
+  return v <= 0 ? 0 : v >= 100 ? 1 : v / 100;
+}
+
+/** The master gain now: 0 when muted, else MASTER_GAIN × volume. */
+export function masterLevel(): number {
+  return muted ? 0 : MASTER_GAIN * volume;
+}
+
+function applyMaster(): void {
+  if (master && ctx) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02);
+}
+
+/** Current sound effects volume, 0–100. */
+export function getVolume(): number {
+  return Math.round(volume * 100);
+}
+
+/** Sets (and saves) the sound effects volume, 0–100. Mute still overrides it. */
+export function setVolume(v: number): void {
+  volume = volumeToGain(v);
+  setSfxVolume(v);
+  applyMaster();
+}
+
+export function isDirectional(): boolean {
+  return directional;
+}
+
+/** Turns (and saves) directional sound; off, every cue plays centred. */
+export function setDirectional(on: boolean): void {
+  directional = on;
+  storeDirectional(on);
+}
+
+// ---------- directional sound ----------
+
+/** What a positioned cue is heard against: the camera (screen space) and the human's head. */
+export type ListenerView = { viewW: number; viewH: number; worldToScreen(p: Vec): Vec };
+let listenerView: ListenerView | null = null;
+let listenerHead: (() => Vec) | null = null;
+
+/**
+ * Sets what positioned cues are heard from (the session's camera and the human's head), or
+ * clears it with null; without one every cue plays centred at full level.
+ */
+export function setListener(view: ListenerView | null, head?: () => Vec): void {
+  listenerView = view;
+  listenerHead = view && head ? head : null;
+}
+
+/** The view a listener was set with (so a session only clears its own). */
+export function currentListener(): ListenerView | null {
+  return listenerView;
+}
+
+/** Stereo pan for a screen x: clamp((x − w/2)/(w/2), −1, 1) · PAN_MAX; 0 when degenerate. */
+export function panFor(screenX: number, width: number): number {
+  if (!(width > 0) || !Number.isFinite(screenX)) return 0;
+  const half = width / 2;
+  const u = (screenX - half) / half;
+  return (u < -1 ? -1 : u > 1 ? 1 : u) * PAN_MAX;
+}
+
+/** Level of an off-screen event `d` world units from the head: clamp01(1.4 − d/60). */
+export function distanceGain(d: number): number {
+  return clamp01(1.4 - d / 60);
+}
+
+/**
+ * How a cue at world point `at` sounds: panned by its screen x (0 with directional off) and,
+ * only when it is off-screen, attenuated by its world distance from the head.
+ */
+export function spatialFor(at: Vec, view: ListenerView, head: Vec, dir: boolean): { pan: number; gain: number } {
+  const s = view.worldToScreen(at);
+  const onScreen = s.x >= 0 && s.x <= view.viewW && s.y >= 0 && s.y <= view.viewH;
+  return {
+    pan: dir ? panFor(s.x, view.viewW) : 0,
+    gain: onScreen ? 1 : distanceGain(Math.hypot(at.x - head.x, at.y - head.y)),
+  };
+}
+
+/**
+ * Wires master to the speakers through a gentle limiter (−10 dB threshold, soft 6 dB knee,
+ * 4:1, fast attack), so stacked cues (capture chord + relief + fanfare + kill) can't clip.
+ * Without createDynamicsCompressor (old engines, test fakes) master goes straight out.
+ * Returns the limiter, or null.
+ */
+/** Cancels the limiter's automatic makeup gain (≈ −4.5 dB). */
+export const LIMITER_TRIM = 0.6;
+
+export function connectMaster(c: AudioContext, m: GainNode): DynamicsCompressorNode | null {
+  if (typeof c.createDynamicsCompressor !== 'function') {
+    m.connect(c.destination);
+    return null;
+  }
+  const lim = c.createDynamicsCompressor();
+  lim.threshold.value = -10;
+  lim.knee.value = 6;
+  lim.ratio.value = 4;
+  lim.attack.value = 0.003;
+  lim.release.value = 0.15;
+  // The spec gives every compressor automatic makeup gain (about +4.5 dB at these
+  // settings); trim it back so the limiter only catches pile-ups, not the whole mix.
+  const trim = c.createGain();
+  trim.gain.value = LIMITER_TRIM;
+  m.connect(lim);
+  lim.connect(trim);
+  trim.connect(c.destination);
+  return lim;
 }
 
 /** Call from a user-gesture handler (a click or key press). Safe to call repeatedly. */
@@ -76,8 +215,8 @@ export function unlockAudio(): void {
       if (!Ctor) { failed = true; return; }
       ctx = new Ctor();
       master = ctx.createGain();
-      master.gain.value = muted ? 0 : MASTER_GAIN;
-      master.connect(ctx.destination);
+      master.gain.value = masterLevel();
+      connectMaster(ctx, master);
     }
     if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
   } catch {
@@ -130,6 +269,8 @@ type NoiseOpts = {
   type?: BiquadFilterType;
   /** Pulse the loudness with a smooth sine tremolo at this rate (Hz). */
   pulseHz?: number;
+  /** Fade-in time (s); 4 ms when unset. */
+  attack?: number;
 };
 
 let noiseBuf: AudioBuffer | null = null;
@@ -142,6 +283,7 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
   const t = c.currentTime + offset + (o.delay ?? 0);
   const src = c.createBufferSource();
   src.buffer = noiseBuf;
+  src.loop = true; // the buffer is 0.5 s; longer sounds (the capture sweep) loop it
   const f = c.createBiquadFilter();
   f.type = o.type ?? 'bandpass';
   f.frequency.setValueAtTime(o.freq, t);
@@ -149,7 +291,7 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
   f.Q.value = o.q ?? 1;
   const g = c.createGain();
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(Math.min(o.gain, MAX_GAIN), t + 0.004);
+  g.gain.linearRampToValueAtTime(Math.min(o.gain, MAX_GAIN), t + (o.attack ?? 0.004));
   g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
   src.connect(f);
   f.connect(g);
@@ -176,6 +318,8 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
   src.stop(t + o.dur + 0.02);
   src.onended = () => { for (const n of nodes) n.disconnect(); };
 }
+
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /** Notes as semitones above A4 (440 Hz). */
 const note = (semi: number) => 440 * 2 ** (semi / 12);
@@ -218,6 +362,15 @@ const SOUNDS: Record<SoundName, Synth> = {
       const at = 2 * 0.065;
       [27, 31, 34].forEach((s, i) => tone(c, out, { f0: note(s), dur: 0.08, gain: 0.025, delay: at + 0.03 + i * 0.04 }));
       noise(c, out, { dur: 0.22, gain: 0.02, freq: 7000, q: 0.6, type: 'highpass', delay: at });
+    }
+    const sweep = o.durationS ?? 0;
+    if (sweep > 0) {
+      // A rising "whoosh" as long as the wave: a soft triangle glide (C5 → C6, a touch higher
+      // for bigger gains) over band-passed noise climbing 700 Hz → 3.2 kHz, all inside the
+      // 150 Hz–4 kHz band phone speakers play. It swells in so the chord stays on top.
+      const top = big ? 2.25 : 2;
+      tone(c, out, { type: 'triangle', f0: note(3), f1: note(3) * top, dur: sweep, gain: gain * 0.45, attack: sweep * 0.5 });
+      noise(c, out, { dur: sweep, gain: 0.03, freq: 700, freqEnd: 3200, q: 1.2, attack: sweep * 0.6 });
     }
   },
   steal(c, out) {
@@ -302,15 +455,86 @@ const SOUNDS: Record<SoundName, Synth> = {
     [12, 19, 24, 19, 24, 31].forEach((s, i) =>
       tone(c, out, { f0: note(s), dur: 0.12, gain: 0.04, delay: i * 0.07 }));
   },
+  heartbeat(c, out, o) {
+    // Soft "lub-dub" 0.12 s apart. A steady sub thump gives body on headphones; small phone
+    // speakers can't play ~50 Hz, so a short 150–300 Hz knock (a triangle partial plus a
+    // low-passed noise thud) carries it there.
+    const g = o.gain ?? 0.04;
+    const beat = (at: number, sub: number, knock: number, k: number) => {
+      tone(c, out, { f0: sub, dur: 0.16, gain: g * k, attack: 0.012, delay: at });
+      tone(c, out, { type: 'triangle', f0: knock, dur: 0.09, gain: g * 0.9 * k, attack: 0.008, delay: at });
+      tone(c, out, { f0: knock * 1.5, dur: 0.06, gain: g * 0.35 * k, attack: 0.008, delay: at });
+      noise(c, out, { dur: 0.07, gain: g * 0.8 * k, freq: knock + 60, q: 1.4, type: 'lowpass', delay: at });
+    };
+    beat(0, 55, 190, 1);
+    beat(0.12, 48, 165, 0.8);
+  },
+  crackle(c, out, o) {
+    // A tiny burst of band-passed noise at a random pitch, a little louder as the burn nears.
+    const p = clamp01(o.level ?? 0);
+    noise(c, out, { dur: 0.035 + Math.random() * 0.03, gain: 0.045 + 0.03 * p, freq: 1600 + Math.random() * 2400, q: 2 });
+  },
+  alert(c, out) {
+    // A quick rising "bip-bip" (B5 then E6) with a soft octave-down body, all inside the
+    // 150 Hz–4 kHz band small phone speakers play well.
+    [[14, 0, 0.07], [19, 0.09, 0.11]].forEach(([s, at, dur]) => {
+      tone(c, out, { type: 'triangle', f0: note(s), dur, gain: 0.055, attack: 0.005, delay: at });
+      tone(c, out, { f0: note(s - 12), dur, gain: 0.03, attack: 0.005, delay: at });
+    });
+  },
+  overtake(c, out) {
+    // A soft rising tick: two quick triangle blips (E5 then A5), inside the phone-speaker band.
+    [[7, 0, 0.06], [12, 0.055, 0.09]].forEach(([s, at, dur]) =>
+      tone(c, out, { type: 'triangle', f0: note(s), f1: note(s) * 1.04, dur, gain: 0.045, attack: 0.005, delay: at }));
+  },
 };
 
 /** Difficulty pick: a soft click whose pitch rises Easy → Normal → Hard. */
 const SELECT_SEMI: Record<Difficulty, number> = { easy: -5, normal: 2, hard: 9 };
 
+/** Longest any one sound rings past its start (s), beyond a capture sweep's own length. */
+const SOUND_TAIL_S = 1.5;
+
+/**
+ * Where a positioned cue's voices go: a per-cue gain (distance) into a StereoPannerNode
+ * into the master. Falls back to the gain alone when panners are unsupported. Returns null
+ * when the cue is too far to hear. The bus is disconnected once the sound is over.
+ */
+function spatialBus(c: AudioContext, out: AudioNode, o: SoundOpts): AudioNode | null {
+  const at = o.at;
+  if (!at || !listenerView || !listenerHead) return out;
+  const sp = spatialFor(at, listenerView, listenerHead(), directional);
+  if (sp.gain < MIN_SPATIAL_GAIN) return null;
+  const bus = c.createGain();
+  bus.gain.value = sp.gain;
+  let panner: StereoPannerNode | null = null;
+  try {
+    const make = (c as Partial<Pick<AudioContext, 'createStereoPanner'>>).createStereoPanner;
+    if (make) {
+      panner = make.call(c);
+      panner.pan.value = sp.pan;
+    }
+  } catch { panner = null; /* unsupported: level only */ }
+  if (panner) {
+    bus.connect(panner);
+    panner.connect(out);
+  } else {
+    bus.connect(out);
+  }
+  const lifeS = offset + (o.durationS ?? 0) + SOUND_TAIL_S;
+  setTimeout(() => {
+    try { bus.disconnect(); panner?.disconnect(); } catch { /* already gone */ }
+  }, lifeS * 1000);
+  return bus;
+}
+
 function play(fn: Synth, o: SoundOpts = {}): void {
   if (muted || !ctx || !master || ctx.state !== 'running') return;
   offset = Math.max(0, o.delay ?? 0);
-  try { fn(ctx, master, o); } catch { /* ignore */ } finally { offset = 0; }
+  try {
+    const out = spatialBus(ctx, master, o);
+    if (out) fn(ctx, out, o);
+  } catch { /* ignore */ } finally { offset = 0; }
 }
 
 export function playSound(name: SoundName, opts?: SoundOpts): void {

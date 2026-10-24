@@ -1,5 +1,8 @@
 import { COLOR_NAMES, PALETTE } from '../game/palette';
-import { isMuted, playSelect, playTick, setMuted, unlockAudio } from '../game/sound';
+import {
+  getVolume, isDirectional, isMuted, playSelect, playSound, playTick, setDirectional, setMuted, setVolume, unlockAudio,
+  type SoundName, type SoundOpts,
+} from '../game/sound';
 import { isNative, isVibrationOn, setVibrationOn } from '../native/platform';
 import { NAMES } from '../sim/names';
 import { pct } from '../sim/world';
@@ -8,8 +11,12 @@ import type { DeathCause, Player, World } from '../sim/types';
 import type { BestScore } from './best';
 import { button, el, icon, labelRow, setText, statTile, svg, type IconName } from './dom';
 import type { Lifetime } from './progress';
+import { getDangerWarnings, getImpact, safeStorage, setDangerWarnings, setImpact } from './settings';
 import { createSkinsScreen, paintSkin, type SkinsView } from './skinsScreen';
 import type { Skin } from '../game/skins';
+import { DANGER_SHOW } from '../game/danger';
+import { MILESTONES } from '../game/sfxEvents';
+import { steerTipSeen } from '../game/overlay';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -26,6 +33,42 @@ export function buildLeaderboard(entries: BoardEntry[], n = 5): BoardRow[] {
     if (you) top.push(you);
   }
   return top;
+}
+
+export type RankChange = { overtaken: { id: number; name: string; colorIndex: number }[]; humanDelta: number };
+
+/**
+ * What changed between two refreshes of the FULL ordering (pass `buildLeaderboard(entries, entries.length)`,
+ * not just the shown rows): the rivals the human passed (above before, below now) and how many places it
+ * moved up (negative = dropped). Rivals are matched by id, and only rivals on both boards count, so a rival
+ * dying or respawning (its row vanishing or appearing) is never an overtake. An empty `prev` (the first
+ * refresh of a round) reports nothing.
+ */
+export function rankChanges(prev: BoardRow[], next: BoardRow[]): RankChange {
+  const none: RankChange = { overtaken: [], humanDelta: 0 };
+  const youPrev = prev.find((r) => r.isHuman);
+  const youNext = next.find((r) => r.isHuman);
+  if (!youPrev || !youNext) return none;
+  const nextById = new Map<number, BoardRow>();
+  for (const r of next) nextById.set(r.id, r);
+  const overtaken: RankChange['overtaken'] = [];
+  let abovePrev = 0; // rivals on both boards above you before / now
+  let aboveNext = 0;
+  for (const r of prev) {
+    const n = nextById.get(r.id);
+    if (r.isHuman || !n) continue;
+    const wasAbove = r.rank < youPrev.rank;
+    const isAbove = n.rank < youNext.rank;
+    if (wasAbove) abovePrev++;
+    if (isAbove) aboveNext++;
+    if (wasAbove && !isAbove) overtaken.push({ id: n.id, name: n.name, colorIndex: n.colorIndex });
+  }
+  return overtaken.length || abovePrev !== aboveNext ? { overtaken, humanDelta: abovePrev - aboveNext } : none;
+}
+
+/** The overtake toast's words: the rival's name, or a count when you passed several at once. */
+export function overtakeToastText(passed: { name: string }[]): string {
+  return passed.length === 1 ? `You passed ${passed[0].name}!` : `You passed ${passed.length} rivals!`;
 }
 
 export function boardEntries(world: World): BoardEntry[] {
@@ -115,11 +158,37 @@ export function cleanName(raw: string): string {
   return n || DEFAULT_NAME;
 }
 
+/** The gold ribbon's words for milestone `tier` (MILESTONES index): "10% CLAIMED!" … "HALF THE MAP!". */
+export function milestoneRibbonText(tier: number): string {
+  const i = Math.max(0, Math.min(MILESTONES.length - 1, Math.floor(tier)));
+  const mark = MILESTONES[i];
+  return mark === 50 ? 'HALF THE MAP!' : `${mark}% CLAIMED!`;
+}
+
+/**
+ * The streak banner's chip for the `n`-th kill of a quick streak (1 = a lone knockout, which
+ * gets no chip): "×3 STREAK". The kill cue's `streak` is n − 1.
+ */
+export function streakChipText(n: number): string | null {
+  return n >= 2 ? `×${Math.floor(n)} STREAK` : null;
+}
+
 export type HudAlerts = { burning: boolean; shielded: boolean };
 
 /** HUD warnings for the human: the trail is burning, or the post-revive shield is up. */
 export function hudAlerts(p: Pick<Player, 'alive' | 'burn' | 'protectedUntil'>, time: number): HudAlerts {
   return { burning: p.alive && p.burn !== null, shielded: p.alive && time < p.protectedUntil };
+}
+
+/** Lit segments (0..3) of the "Far from home" meter: one per full third of danger. */
+export function dangerSegments(danger: number): number {
+  return Math.max(0, Math.min(3, Math.floor(danger * 3 + 1e-9)));
+}
+
+/** Heartbeat icon period (s) at a danger level: 1.0 − 0.55·danger, in 0.05 s steps. */
+export function heartbeatSeconds(danger: number): number {
+  const d = Math.max(0, Math.min(1, danger));
+  return Math.round((1 - 0.55 * d) * 20) / 20;
 }
 
 /** The difficulty holding the top best (by isBetter's order); null unless 2+ difficulties have one. */
@@ -139,7 +208,7 @@ export function highestBest(bests: Partial<Record<Difficulty, BestScore | null>>
 type FlagStore = Pick<Storage, 'getItem' | 'setItem'> | undefined;
 
 /** A '1'/'0' setting in storage; `fallback` when unset or storage is unavailable. */
-export function readFlag(key: string, fallback: boolean, store: FlagStore = globalThis.localStorage): boolean {
+export function readFlag(key: string, fallback: boolean, store: FlagStore = safeStorage()): boolean {
   try {
     const v = store?.getItem(key);
     return v === '1' ? true : v === '0' ? false : fallback;
@@ -148,13 +217,13 @@ export function readFlag(key: string, fallback: boolean, store: FlagStore = glob
   }
 }
 
-export function writeFlag(key: string, on: boolean, store: FlagStore = globalThis.localStorage): void {
+export function writeFlag(key: string, on: boolean, store: FlagStore = safeStorage()): void {
   try { store?.setItem(key, on ? '1' : '0'); } catch { /* storage unavailable */ }
 }
 
 /** One of `options` from storage; `fallback` when unset, unknown or storage is unavailable. */
 export function readChoice<T extends string>(key: string, options: readonly T[], fallback: T,
-  store: FlagStore = globalThis.localStorage): T {
+  store: FlagStore = safeStorage()): T {
   try {
     const v = store?.getItem(key);
     return v !== null && v !== undefined && (options as readonly string[]).includes(v) ? (v as T) : fallback;
@@ -163,7 +232,7 @@ export function readChoice<T extends string>(key: string, options: readonly T[],
   }
 }
 
-export function writeChoice(key: string, value: string, store: FlagStore = globalThis.localStorage): void {
+export function writeChoice(key: string, value: string, store: FlagStore = safeStorage()): void {
   try { store?.setItem(key, value); } catch { /* storage unavailable */ }
 }
 
@@ -189,6 +258,29 @@ export function randomName(current: string, rand: () => number = Math.random, na
 }
 
 export const REDUCED_MOTION_KEY = 'territory-wars.reduced-motion';
+
+/** Dragging the volume slider plays a preview tick at most this often (ms). */
+export const PREVIEW_TICK_MS = 120;
+
+/** A gate that opens at most once per `ms` (given monotonic timestamps in ms). */
+export function createRateLimit(ms: number): (nowMs: number) => boolean {
+  let last = -Infinity;
+  return (now) => {
+    if (now - last < ms) return false;
+    last = now;
+    return true;
+  };
+}
+
+/**
+ * The "Test sounds" button: a capture, a cut and a knockout with short gaps. The first waits
+ * a moment so a context just created (and resumed) by the same click is running by then.
+ */
+export const TEST_SOUNDS: readonly { name: SoundName; atMs: number; opts?: SoundOpts }[] = [
+  { name: 'capture', atMs: 80, opts: { pct: 2 } },
+  { name: 'cut', atMs: 620 },
+  { name: 'kill', atMs: 1000 },
+];
 
 /** The steering hint fades out after this many seconds of play. */
 export const HINT_SECONDS = 8;
@@ -268,20 +360,69 @@ export type Screens = {
   minimap: HTMLCanvasElement;
   /** The in-game HUD; its pause button calls onPause. */
   showHud(onPause: () => void): void;
+  /** Screen rects (CSS px) of the visible HUD corner cards, for the canvas overlay to avoid. */
+  hudRects(): { x: number; y: number; w: number; h: number }[];
   /** Pause menu over the frozen game. */
   showPause(handlers: PauseHandlers): void;
   hidePause(): void;
   /** Refreshes the HUD; returns true while the % counter is animating (call tickHud per frame). */
-  updateHud(world: World, now: number): boolean;
+  /** `danger` is the session's sampled danger level (0 when danger warnings are off). */
+  updateHud(world: World, now: number, danger?: number): boolean;
   /** Advances the % counter animation; returns true while it is still animating. */
   tickHud(now: number): boolean;
+  /** The human just captured land: the % card bumps (not under reduced motion). */
+  bumpPct(): void;
+  /** The human first passed milestone `tier` (MILESTONES index): a gold ribbon, after `delayS`. */
+  showMilestone(tier: number, delayS?: number): void;
+  /** The human knocked a rival out: the gold "KNOCKOUT!" banner, with a chip from a 2nd quick kill on. */
+  showKnockout(streak: number): void;
   showOver(stats: OverStats, onAgain: () => void, onHome: () => void, nativeAd?: NativeAdSlot): void;
   /** Revive modal over the (frozen) game and HUD, with a REVIVE_COUNTDOWN_MS countdown. */
   showRevive(info: ReviveInfo, handlers: ReviveHandlers): void;
   hideRevive(): void;
 };
 
-type RowEls = { root: HTMLElement; rank: HTMLElement; swatch: HTMLElement; name: HTMLElement; pct: HTMLElement; key: string };
+/** % card bump on a capture: up to 1.12× and back, with a ▲ that floats up and fades. */
+const BUMP_MS = 220;
+const BUMP_KEYS: Keyframe[] = [{ transform: 'scale(1)' }, { transform: 'scale(1.12)', offset: 0.4 }, { transform: 'scale(1)' }];
+const UP_MS = 600;
+const UP_KEYS: Keyframe[] = [
+  { opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'translateY(0)', offset: 0.2 },
+  { opacity: 0, transform: 'translateY(-10px)' },
+];
+/** Milestone ribbon: slides down in, holds, slides back up; 1.6 s in all. */
+const RIBBON_MS = 1600;
+const RIBBON_KEYS: Keyframe[] = [
+  { transform: 'translateY(-28px) scale(0.9)', opacity: 0 },
+  { transform: 'translateY(0) scale(1.04)', opacity: 1, offset: 0.12 },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.18 },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.85 },
+  { transform: 'translateY(-20px) scale(0.95)', opacity: 0 },
+];
+/** Knockout banner: slides in (~180 ms), holds 1.1 s, slides out (~220 ms). */
+const KO_IN_MS = 180;
+const KO_HOLD_MS = 1100;
+const KO_OUT_MS = 220;
+const KO_MS = KO_IN_MS + KO_HOLD_MS + KO_OUT_MS;
+const KO_KEYS: Keyframe[] = [
+  { transform: 'translateY(-24px) scale(0.85)', opacity: 0 },
+  { transform: 'translateY(0) scale(1.08)', opacity: 1, offset: KO_IN_MS / KO_MS * 0.7 },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: KO_IN_MS / KO_MS },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: (KO_IN_MS + KO_HOLD_MS) / KO_MS },
+  { transform: 'translateY(-18px) scale(0.95)', opacity: 0 },
+];
+/** Leaderboard reactions: rows slide 280 ms; the "▲N" badge and glow last 1.2 s; the toast 1.6 s, one per 1.5 s. */
+const SLIDE_MS = 280;
+const UP_BADGE_MS = 1200;
+const TOAST_MS = 1600;
+const TOAST_GAP_MS = 1500;
+const RIBBON_SPECKS = 14;
+/** The alert pills fade out in 300 ms (.tw-on in style.css). */
+const PILL_FADE_OUT_MS = 300;
+const SPECK_MS = 900;
+const SPECK_COLORS = ['#FFC93C', '#FF7A59', '#8DAAEC', '#2ED47A', '#F48FB1', '#C99A1E'];
+
+type RowEls = { root: HTMLElement; rank: HTMLElement; swatch: HTMLElement; name: HTMLElement; pct: HTMLElement; key: string; id: number };
 
 export function createScreens(root: HTMLElement): Screens {
   root.classList.add('tw-ui');
@@ -290,7 +431,11 @@ export function createScreens(root: HTMLElement): Screens {
   let reducedPref = readFlag(REDUCED_MOTION_KEY, false);
   const motionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   const reduceMotion = () => reducedPref || !!motionQuery?.matches;
-  const applyReduced = () => root.classList.toggle('tw-reduced-motion', reducedPref);
+  const applyReduced = () => {
+    root.classList.toggle('tw-reduced-motion', reducedPref);
+    // The canvas layers (render.ts prefersReducedMotion) read the flag from <html>.
+    document.documentElement.classList.toggle('tw-reduced-motion', reducedPref);
+  };
   applyReduced();
 
   type Toggle = { btn: HTMLButtonElement; sync(): void };
@@ -493,18 +638,75 @@ export function createScreens(root: HTMLElement): Screens {
   let minimapOn = readFlag(MINIMAP_KEY, true);
   const settingsList = el('div', 'tw-settings');
   const settingRow = (name: IconName, label: string, get: () => boolean, set: (on: boolean) => void,
-    parent: HTMLElement = settingsList) => {
+    parent: HTMLElement = settingsList, helper?: string) => {
     const b = button('tw-setting');
     b.setAttribute('role', 'switch');
     const knob = el('span', 'tw-switch');
     knob.setAttribute('aria-hidden', 'true');
-    b.append(icon(name), el('span', 'tw-setting-label', label), knob);
+    if (helper) {
+      // A label with a line of help under it (the switch's accessible name is the whole text).
+      const text = el('span', 'tw-setting-text');
+      text.append(el('span', 'tw-setting-label', label), el('span', 'tw-setting-sub', helper));
+      b.classList.add('tw-setting-helped');
+      b.append(icon(name), text, knob);
+    } else {
+      b.append(icon(name), el('span', 'tw-setting-label', label), knob);
+    }
     b.addEventListener('click', () => { set(!get()); syncAll(); });
     toggles.push({ btn: b, sync: () => b.setAttribute('aria-checked', String(get())) });
     parent.append(b);
   };
-  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); });
-  settingRow('vibrate', 'Vibration', isVibrationOn, (on) => setVibrationOn(on));
+  // Sound & Feel: audio and game-feel switches in their own card, above the general settings.
+  const feelList = el('div', 'tw-settings tw-feel');
+  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); }, feelList);
+  // Volume: 0–100, scaling the master gain (mute still wins). Dragging previews with a tick.
+  const volRow = el('div', 'tw-setting tw-setting-slider');
+  const volInput = el('input', 'tw-slider');
+  volInput.type = 'range';
+  volInput.min = '0';
+  volInput.max = '100';
+  volInput.step = '1';
+  volInput.id = 'tw-volume';
+  const volValue = el('span', 'tw-slider-value tw-num');
+  const volLabel = el('label', 'tw-setting-label', 'Volume');
+  volLabel.htmlFor = 'tw-volume';
+  const volTop = el('span', 'tw-slider-top');
+  volTop.append(volLabel, volValue);
+  const volBody = el('span', 'tw-slider-body');
+  volBody.append(volTop, volInput);
+  volRow.append(icon('sound'), volBody);
+  feelList.append(volRow);
+  const showVolume = (v: number) => {
+    volInput.value = String(v);
+    volInput.style.setProperty('--fill', `${v}%`);
+    setText(volValue, `${v}%`);
+  };
+  showVolume(getVolume());
+  const previewOk = createRateLimit(PREVIEW_TICK_MS);
+  const previewTick = () => {
+    unlockAudio();
+    if (previewOk(performance.now())) playTick();
+  };
+  volInput.addEventListener('input', () => {
+    const v = Number(volInput.value);
+    setVolume(v);
+    showVolume(getVolume());
+    previewTick();
+  });
+  settingRow('headphones', 'Directional sound', isDirectional, (on) => { setDirectional(on); playTick(); }, feelList,
+    'Hear fights off-screen from the side they happen');
+  settingRow('vibrate', 'Vibration', isVibrationOn, (on) => setVibrationOn(on), feelList);
+  settingRow('warning', 'Danger warnings', () => getDangerWarnings(), (on) => setDangerWarnings(on), feelList,
+    'Edge arrows and heartbeat when rivals near your trail');
+  settingRow('shake', 'Screen shake & freeze-frames', () => getImpact(), (on) => setImpact(on), feelList);
+  const testBtn = button('tw-btn tw-btn-secondary tw-test-sounds');
+  testBtn.append(icon('sound'), el('span', undefined, 'Test sounds'));
+  let testTimers: number[] = [];
+  testBtn.addEventListener('click', () => {
+    unlockAudio(); // inside the click gesture
+    for (const t of testTimers) clearTimeout(t);
+    testTimers = TEST_SOUNDS.map((t) => window.setTimeout(() => playSound(t.name, t.opts), t.atMs));
+  });
   settingRow('motion-off', 'Reduced motion', () => reducedPref, (on) => {
     reducedPref = on;
     writeFlag(REDUCED_MOTION_KEY, on);
@@ -563,6 +765,7 @@ export function createScreens(root: HTMLElement): Screens {
     el('div', undefined, 'No in-app purchases · Ad-supported fair play'));
   recInner.append(recHead, sectionHead('trophy', 'Personal bests'), bestList,
     el('h3', 'tw-section-label', 'Lifetime career'), lifeTiles,
+    sectionHead('sound', 'Sound & Feel'), feelList, testBtn,
     sectionHead('gear', 'Settings'), settingsList, recFoot);
   records.append(recInner);
   let onBackCb: (() => void) | null = null;
@@ -582,7 +785,9 @@ export function createScreens(root: HTMLElement): Screens {
   areaHead.append(areaDot, el('span', undefined, 'My area'));
   const pctEl = el('div', 'tw-pct tw-num');
   const pctNum = el('span', undefined, '0.00');
-  pctEl.append(pctNum, el('span', 'tw-pct-sign', '%'));
+  const pctUp = el('span', 'tw-pct-up', '▲');
+  pctUp.setAttribute('aria-hidden', 'true');
+  pctEl.append(pctNum, el('span', 'tw-pct-sign', '%'), pctUp);
   const areaFoot = el('div', 'tw-area-foot');
   const burnTag = el('span', 'tw-burn-tag');
   burnTag.append(icon('flame'), el('span', undefined, 'Burning'));
@@ -615,8 +820,48 @@ export function createScreens(root: HTMLElement): Screens {
     r.append(rank, swatch, name, p);
     r.hidden = true;
     board.append(r);
-    rowEls.push({ root: r, rank, swatch, name, pct: p, key: '' });
+    rowEls.push({ root: r, rank, swatch, name, pct: p, key: '', id: -1 });
   }
+  // Overtake reactions: a green "▲N" badge on your row, and a white toast pill under the board
+  // (over its top on ≤560px, see style.css).
+  const upBadge = el('span', 'tw-up');
+  upBadge.hidden = true;
+  const toast = el('div', 'tw-toast');
+  toast.setAttribute('role', 'status');
+  const toastSwatch = el('span', 'tw-toast-swatch');
+  const toastText = el('span');
+  toast.append(toastSwatch, toastText);
+  toast.hidden = true;
+  boardBox.append(toast);
+  let prevBoard: BoardRow[] = [];
+  let upUntil = 0;
+  let lastToastAt = -Infinity;
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  const hideToast = () => {
+    if (toastTimer !== null) clearTimeout(toastTimer);
+    toastTimer = null;
+    toast.hidden = true;
+  };
+  const resetBoardFx = () => {
+    prevBoard = [];
+    upUntil = 0;
+    lastToastAt = -Infinity;
+    upBadge.hidden = true;
+    for (const r of rowEls) r.root.classList.remove('tw-up-glow');
+    hideToast();
+  };
+  const showToast = (passed: RankChange['overtaken']) => {
+    hideToast();
+    setText(toastText, overtakeToastText(passed));
+    toastSwatch.style.background = PALETTE.players[passed[0].colorIndex % PALETTE.players.length].base;
+    toast.hidden = false;
+    if (!reduceMotion() && typeof toast.animate === 'function') {
+      toast.animate(
+        [{ opacity: 0, transform: 'translateY(-8px) scale(0.95)' }, { opacity: 1, transform: 'none' }],
+        { duration: 180, easing: 'ease-out' });
+    }
+    toastTimer = setTimeout(hideToast, TOAST_MS);
+  };
   const crown = icon('crown-fill', 'tw-crown');
   crown.removeAttribute('aria-hidden');
   crown.setAttribute('role', 'img');
@@ -624,16 +869,143 @@ export function createScreens(root: HTMLElement): Screens {
 
   const alerts = el('div', 'tw-alerts');
   alerts.setAttribute('role', 'status');
+  // Both pills share one spot and cross-fade (in 200 ms, out 300 ms; see .tw-on).
   const burnPill = el('div', 'tw-burn-pill');
-  burnPill.append(icon('flame'), el('span', undefined, 'Your trail is burning — get home!'), icon('flame'));
-  burnPill.hidden = true;
-  alerts.append(burnPill);
+  burnPill.append(icon('flame'), el('span', undefined, 'Trail on fire — get home!'), icon('flame'));
+  const dangerPill = el('div', 'tw-danger-pill');
+  const heart = icon('heart-fill', 'tw-heart');
+  const meter = el('span', 'tw-danger-meter');
+  const segs: HTMLElement[] = [];
+  for (let i = 0; i < 3; i++) { const sg = el('span', 'tw-danger-seg'); segs.push(sg); meter.append(sg); }
+  dangerPill.append(heart, el('span', undefined, 'Far from home'), meter);
+  // Milestone ribbon: gold, under the alert pills, with a small pool of confetti specks. It
+  // shares one spot with the knockout banner, one at a time: a ribbon due while the banner
+  // shows waits for it (kills often pass a milestone in the same step).
+  const ribbon = el('div', 'tw-ribbon'); // announced by the alerts' status role
+  const ribbonText = el('span', 'tw-ribbon-text');
+  ribbon.append(icon('star'), ribbonText, icon('star'));
+  const specks: HTMLElement[] = [];
+  for (let i = 0; i < RIBBON_SPECKS; i++) {
+    const sp = el('span', 'tw-speck');
+    sp.style.background = SPECK_COLORS[i % SPECK_COLORS.length];
+    specks.push(sp);
+    ribbon.append(sp);
+  }
+  ribbon.hidden = true;
+  // Knockout banner: a gold pill with a lip ("KNOCKOUT!") and, in a streak, a "×N STREAK" chip.
+  const ko = el('div', 'tw-ko'); // announced by the alerts' status role
+  const koPill = el('span', 'tw-ko-pill', 'KNOCKOUT!');
+  const koChip = el('span', 'tw-ko-chip');
+  const koChipText = el('span');
+  koChip.append(icon('flame'), koChipText);
+  ko.append(koPill, koChip);
+  ko.hidden = true;
+  alerts.append(dangerPill, burnPill, ribbon, ko);
+  let koTimer: ReturnType<typeof setTimeout> | null = null;
+  let koAnim: Animation | null = null;
+  /** Milestone tier waiting for the knockout banner to go, or -1. */
+  let ribbonQueued = -1;
+  const hideKo = () => {
+    if (koTimer !== null) clearTimeout(koTimer);
+    koTimer = null;
+    koAnim?.cancel();
+    koAnim = null;
+    ko.hidden = true;
+  };
+  const endKo = () => {
+    hideKo();
+    const tier = ribbonQueued;
+    ribbonQueued = -1;
+    if (tier >= 0) playRibbon(tier);
+  };
+  const playKo = (streak: number) => {
+    hideKo();
+    // A ribbon on show steps aside and comes back (from the start) after the banner.
+    if (ribbonTimer !== null) {
+      const tier = ribbonTier;
+      hideRibbon();
+      ribbonQueued = tier;
+    }
+    const chip = streakChipText(streak + 1);
+    koChip.hidden = chip === null;
+    if (chip !== null) setText(koChipText, chip);
+    ko.hidden = false;
+    const still = reduceMotion() || typeof ko.animate !== 'function';
+    if (!still) koAnim = ko.animate(KO_KEYS, { duration: KO_MS, easing: 'ease-out' });
+    koTimer = setTimeout(endKo, KO_MS);
+  };
+  let ribbonTimer: ReturnType<typeof setTimeout> | null = null;
+  let ribbonDelay: ReturnType<typeof setTimeout> | null = null;
+  let ribbonTier = 0;
+  const hideRibbon = () => {
+    if (ribbonTimer !== null) clearTimeout(ribbonTimer);
+    if (ribbonDelay !== null) clearTimeout(ribbonDelay);
+    ribbonTimer = ribbonDelay = null;
+    ribbonQueued = -1;
+    ribbon.hidden = true;
+  };
+  const playRibbon = (tier: number) => {
+    ribbonDelay = null;
+    if (!ko.hidden) { ribbonQueued = tier; return; }
+    ribbonTier = tier;
+    setText(ribbonText, milestoneRibbonText(tier));
+    ribbon.hidden = false;
+    const still = reduceMotion() || typeof ribbon.animate !== 'function';
+    if (!still) {
+      ribbon.animate(RIBBON_KEYS, { duration: RIBBON_MS, easing: 'ease-out' });
+      specks.forEach((sp, i) => {
+        // An even fan upward and out, jittered, then falling back a little.
+        const a = Math.PI * (1.05 + 0.9 * (i + Math.random() * 0.6) / RIBBON_SPECKS);
+        const d = 46 + Math.random() * 40;
+        const x = Math.cos(a) * d, y = Math.sin(a) * d * 0.7;
+        sp.animate([
+          { transform: 'translate(-50%, -50%) scale(0.4) rotate(0deg)', opacity: 1 },
+          { transform: `translate(calc(-50% + ${x.toFixed(1)}px), calc(-50% + ${y.toFixed(1)}px)) scale(1) rotate(200deg)`, opacity: 1, offset: 0.55 },
+          { transform: `translate(calc(-50% + ${(x * 1.15).toFixed(1)}px), calc(-50% + ${(y + 26).toFixed(1)}px)) scale(0.8) rotate(320deg)`, opacity: 0 },
+        ], { duration: SPECK_MS, delay: 120 + i * 12, easing: 'cubic-bezier(0.2, 0.8, 0.4, 1)', fill: 'both' });
+      });
+    }
+    ribbon.classList.toggle('tw-still', still);
+    ribbonTimer = setTimeout(hideRibbon, RIBBON_MS);
+  };
+  const bumpCard = () => {
+    if (reduceMotion() || typeof area.animate !== 'function') return;
+    area.animate(BUMP_KEYS, { duration: BUMP_MS, easing: 'ease-out' });
+    pctUp.animate(UP_KEYS, { duration: UP_MS, easing: 'ease-out' });
+  };
+  /** Last written HUD alert state, so the DOM is touched only on change. */
+  let shownBurn = false, shownDanger = false, shownSegs = -1, shownBeat = -1;
+  // With neither pill on, their row collapses once the fade-out is done (.tw-pills-off), so
+  // the ribbon / knockout banner sit right under the HUD cards, clear of the player's head.
+  let pillsOffTimer: ReturnType<typeof setTimeout> | null = null;
+  const syncPillRow = () => {
+    if (pillsOffTimer !== null) clearTimeout(pillsOffTimer);
+    pillsOffTimer = null;
+    if (shownBurn || shownDanger) alerts.classList.remove('tw-pills-off');
+    else if (reduceMotion()) alerts.classList.add('tw-pills-off');
+    else pillsOffTimer = setTimeout(() => { pillsOffTimer = null; alerts.classList.add('tw-pills-off'); }, PILL_FADE_OUT_MS);
+  };
+  alerts.classList.add('tw-pills-off');
+  const setAlerts = (burning: boolean, danger: number) => {
+    const showDanger = !burning && danger >= DANGER_SHOW;
+    const wasOn = shownBurn || shownDanger;
+    if (burning !== shownBurn) { shownBurn = burning; burnPill.classList.toggle('tw-on', burning); }
+    if (showDanger !== shownDanger) { shownDanger = showDanger; dangerPill.classList.toggle('tw-on', showDanger); }
+    if (wasOn !== (shownBurn || shownDanger)) syncPillRow();
+    if (!showDanger) return; // keep the last meter while it fades out
+    const n = dangerSegments(danger);
+    if (n !== shownSegs) { shownSegs = n; segs.forEach((sg, i) => sg.classList.toggle('tw-lit', i < n)); }
+    const beat = heartbeatSeconds(danger);
+    if (beat !== shownBeat) { shownBeat = beat; dangerPill.style.setProperty('--tw-beat', `${beat}s`); }
+  };
   const shieldToast = el('div', 'tw-shield-toast');
   shieldToast.append(icon('shield'), el('span', undefined, 'Revived! '), el('b', undefined, `Shield ${CONFIG.REVIVE_PROTECT_S}s`));
   shieldToast.hidden = true;
   shieldToast.setAttribute('role', 'status');
 
   const steerHint = el('div', 'tw-steer-hint', 'Drag anywhere to steer');
+  /** This round shows the first-time steer bubble (overlay.ts) instead of the plain hint. */
+  let steerBubbleRound = false;
   const minimapWrap = el('div', 'tw-minimap-wrap');
   const minimap = el('canvas', 'tw-minimap');
   minimap.setAttribute('aria-label', 'Map of the whole arena');
@@ -995,15 +1367,30 @@ export function createScreens(root: HTMLElement): Screens {
       setTab('skins', onTab);
       skins.focus();
     },
+    hudRects() {
+      const out: { x: number; y: number; w: number; h: number }[] = [];
+      for (const e of [area, pauseBtn, boardBox, minimapWrap]) {
+        if (e.hidden || hud.hidden) continue;
+        const r = e.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) out.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+      }
+      return out;
+    },
     showHud(onPause) {
-      for (const r of rowEls) { r.root.hidden = true; r.key = ''; }
+      for (const r of rowEls) { r.root.hidden = true; r.key = ''; r.id = -1; }
+      resetBoardFx();
       pctTween.snap(0);
       setText(pctNum, '0.00');
       setText(killsNum, '0');
       setText(timeNum, '0:00');
-      burnPill.hidden = shieldToast.hidden = burnTag.hidden = true;
+      shieldToast.hidden = burnTag.hidden = true;
+      setAlerts(false, 0);
+      hideRibbon();
+      hideKo();
       area.classList.remove('tw-burning');
-      steerHint.classList.remove('tw-gone');
+      // Read before the session starts: the overlay saves the flag on the round's first frame.
+      steerBubbleRound = !steerTipSeen();
+      steerHint.classList.toggle('tw-gone', steerBubbleRound);
       hudColor = -1;
       minimapWrap.hidden = !minimapOn;
       syncAll();
@@ -1025,7 +1412,14 @@ export function createScreens(root: HTMLElement): Screens {
       setText(pctNum, Math.max(0, pctTween.value(now)).toFixed(2));
       return pctTween.active(now);
     },
-    updateHud(world, now) {
+    bumpPct: bumpCard,
+    showKnockout: playKo,
+    showMilestone(tier, delayS = 0) {
+      hideRibbon();
+      if (delayS > 0) ribbonDelay = setTimeout(() => playRibbon(tier), delayS * 1000);
+      else playRibbon(tier);
+    },
+    updateHud(world, now, danger = 0) {
       const human = world.players[world.humanId];
       const p = pct(world, human.id);
       if (reduceMotion()) pctTween.snap(p);
@@ -1038,14 +1432,30 @@ export function createScreens(root: HTMLElement): Screens {
         areaDot.style.background = PALETTE.players[hudColor % PALETTE.players.length].base;
       }
       const a = hudAlerts(human, world.time);
-      burnPill.hidden = burnTag.hidden = !a.burning;
+      burnTag.hidden = !a.burning;
+      setAlerts(a.burning, danger);
       area.classList.toggle('tw-burning', a.burning);
-      shieldToast.hidden = !a.shielded;
-      steerHint.classList.toggle('tw-gone', world.time > HINT_SECONDS);
-      const rows = buildLeaderboard(boardEntries(world));
+      // The shield toast sits where the ribbon / knockout banner show on short phones.
+      shieldToast.hidden = !a.shielded || !ko.hidden || !ribbon.hidden;
+      steerHint.classList.toggle('tw-gone', steerBubbleRound || world.time > HINT_SECONDS);
+      const all = buildLeaderboard(boardEntries(world), Infinity);
+      const rows = all.slice(0, 5);
+      if (!rows.some((r) => r.isHuman)) { const you = all.find((r) => r.isHuman); if (you) rows.push(you); }
+
+      // FLIP: when a shown row lands in a different slot, slide it from its old slot (one layout
+      // read, only on a change of order). Row i is reused for whichever player now sits in slot i.
+      const still = reduceMotion() || typeof root.animate !== 'function';
+      let moved = false;
+      for (let i = 0; i < rows.length; i++) if (rowEls[i].id !== rows[i].id && rowEls[i].id !== -1) { moved = true; break; }
+      let pitch = 0;
+      if (moved && !still) {
+        pitch = rowEls[1].root.getBoundingClientRect().top - rowEls[0].root.getBoundingClientRect().top;
+      }
+
       rowEls.forEach((r, i) => {
         const row = rows[i];
-        if (!row) { r.root.hidden = true; return; }
+        if (!row) { r.root.hidden = true; r.id = -1; return; }
+        const from = pitch > 0 ? rowEls.findIndex((o) => o.id === row.id) : -1;
         r.root.hidden = false;
         if (row.leader) { if (crown.parentElement !== r.rank) r.rank.replaceChildren(crown); }
         else setText(r.rank, String(row.rank));
@@ -1058,7 +1468,32 @@ export function createScreens(root: HTMLElement): Screens {
           r.root.classList.toggle('tw-you', row.isHuman);
           r.root.classList.toggle('tw-leader', row.leader);
         }
+        if (from >= 0 && from !== i) {
+          r.root.animate([{ transform: `translateY(${(from - i) * pitch}px)` }, { transform: 'translateY(0)' }],
+            { duration: SLIDE_MS, easing: 'ease-out' });
+        }
       });
+      for (let i = 0; i < rowEls.length; i++) rowEls[i].id = rows[i] ? rows[i].id : -1;
+
+      // Overtakes: compared on the full ordering, so passing a rival below the shown rows counts too.
+      const ch = rankChanges(prevBoard, all);
+      prevBoard = all;
+      if (ch.humanDelta > 0) {
+        upUntil = now + UP_BADGE_MS;
+        setText(upBadge, `▲${ch.humanDelta}`);
+      }
+      if (ch.overtaken.length && now - lastToastAt >= TOAST_GAP_MS) {
+        lastToastAt = now;
+        showToast(ch.overtaken);
+        playSound('overtake');
+      }
+      const upOn = now < upUntil;
+      for (let i = 0; i < rows.length; i++) {
+        const mine = upOn && rows[i].isHuman;
+        rowEls[i].root.classList.toggle('tw-up-glow', mine && !still);
+        if (mine && upBadge.parentElement !== rowEls[i].root) rowEls[i].root.append(upBadge);
+      }
+      upBadge.hidden = !upOn;
       return pctTween.active(now);
     },
     showOver(s, onAgain, onHome, nativeAd) {

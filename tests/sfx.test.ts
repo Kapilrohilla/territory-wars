@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createSfxState, soundsFor, STREAK_WINDOW_S, type Cue, type SfxState } from '../src/game/sfxEvents';
+import { waveSeconds } from '../src/game/waves';
 import { captureNotes, MAX_STREAK, STREAK_STEPS } from '../src/game/sound';
 import { createWorld } from '../src/sim/world';
 import { circleRing } from '../src/sim/geometry';
@@ -26,7 +27,8 @@ function setHumanPct(world: World, share: number) {
 
 describe('soundsFor', () => {
   it('plays capture only for the human gaining land, carrying the gain', () => {
-    expect(soundsFor([cap(0, 0.4)], w, createSfxState())).toEqual([{ name: 'capture', pct: 0.4, delay: 0 }]);
+    const hp = w.players[w.humanId].pos;
+    expect(soundsFor([cap(0, 0.4)], w, createSfxState())).toEqual([{ name: 'capture', pct: 0.4, delay: 0, durationS: waveSeconds(0), at: { x: hp.x, y: hp.y } }]);
     expect(once([cap(3, 0.4)])).toEqual(none);
     expect(once([cap(0, 0)])).toEqual(none);
   });
@@ -65,6 +67,21 @@ describe('soundsFor', () => {
     expect(once([{ type: 'cut', hitterId: 0, victimId: 2 }])).toEqual(['cut']);
     expect(once([{ type: 'cut', hitterId: 2, victimId: 0 }])).toEqual(['burning']);
     expect(once([{ type: 'cut', hitterId: 2, victimId: 3 }])).toEqual(none);
+  });
+
+  it('positions cues in the world: capture, cut and burning at the head, kill at the victim', () => {
+    const world = newWorld();
+    const h = world.players[0];
+    h.pos = { x: 3, y: -4 };
+    world.players[4].pos = { x: 20, y: 7 };
+    const at = (events: GameEvent[]) => soundsFor(events, world, createSfxState())[0].at;
+    expect(at([cap(0, 1)])).toEqual({ x: 3, y: -4 });
+    expect(at([{ type: 'cut', hitterId: 0, victimId: 2 }])).toEqual({ x: 3, y: -4 });
+    expect(at([{ type: 'cut', hitterId: 2, victimId: 0 }])).toEqual({ x: 3, y: -4 });
+    expect(at([killBy(0, 4)])).toEqual({ x: 20, y: 7 });
+    // A copy, not the live (mutating) position.
+    expect(at([cap(0, 1)])).not.toBe(h.pos);
+    expect(soundsFor([{ type: 'win' }], world, createSfxState())[0].at).toBeUndefined();
   });
 
   it('kill only when the human knocks out a rival', () => {
@@ -128,7 +145,8 @@ describe('kill streaks', () => {
     const s = createSfxState();
     world.time = 3;
     const cues = soundsFor([killBy(0, 1), killBy(0, 2), killBy(0, 3)], world, s);
-    expect(cues).toEqual([{ name: 'kill', streak: 2 }]);
+    const v = world.players[3].pos;
+    expect(cues).toEqual([{ name: 'kill', streak: 2, at: { x: v.x, y: v.y } }]);
   });
 
   it('bot kills do not touch the streak', () => {
@@ -139,6 +157,24 @@ describe('kill streaks', () => {
     soundsFor([killBy(3, 4)], world, s);
     expect(s.streak).toBe(0);
     expect(killAt(world, s, 3)).toBe(1);
+  });
+});
+
+describe('capture sweep length', () => {
+  it('matches the wave of the largest region the human captured this step', () => {
+    const sq = (side: number): GameEvent => ({
+      type: 'capture', playerId: 0, gainedPct: 1, stolen: [],
+      region: [[[{ x: 0, y: 0 }, { x: side, y: 0 }, { x: side, y: side }, { x: 0, y: side }]]],
+    });
+    const cue = soundsFor([sq(10), sq(30)], w, createSfxState()).find((c) => c.name === 'capture');
+    expect(cue?.durationS).toBeCloseTo(waveSeconds(900), 9);
+  });
+
+  it("an absorbed victim's land counts too", () => {
+    const region = [[[{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }]]];
+    const cue = soundsFor([{ type: 'absorb', playerId: 0, victimId: 2, gainedPct: 2, region }], w, createSfxState())
+      .find((c) => c.name === 'capture');
+    expect(cue?.durationS).toBeCloseTo(waveSeconds(400), 9);
   });
 });
 
@@ -230,7 +266,7 @@ describe('revive shield', () => {
     world.players[0].protectedUntil = 4;
     soundsFor([], world, s);
     world.time = 3;
-    expect(soundsFor([killBy(0, 2)], world, s)).toContainEqual({ name: 'kill', streak: 0 });
+    expect(soundsFor([killBy(0, 2)], world, s)).toContainEqual(expect.objectContaining({ name: 'kill', streak: 0 }));
   });
 
   it('no power-down when the human is not alive as the shield ends', () => {

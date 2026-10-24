@@ -72,8 +72,8 @@ function animateHud(): void {
   hudFrame = requestAnimationFrame(frame);
 }
 
-function refreshHud(world: Session['world']): void {
-  if (ui.updateHud(world, performance.now())) animateHud();
+function refreshHud(s: Session): void {
+  if (ui.updateHud(s.world, performance.now(), s.danger.level)) animateHud();
 }
 
 function go(tab: Tab): void {
@@ -148,6 +148,12 @@ function play(prefs: StartPrefs): void {
   const lifetimeBefore = loadLifetime();
   const s = createSession(canvas, {
     minimap: ui.minimap,
+    hudRects: () => ui.hudRects(),
+    onCue: (cue) => {
+      if (cue.name === 'capture') ui.bumpPct();
+      else if (cue.name === 'milestone') ui.showMilestone(cue.tier ?? 0, cue.delay);
+      else if (cue.name === 'kill') ui.showKnockout(cue.streak ?? 0);
+    },
     humanName: prefs.name,
     humanSkin: loadSkin(lifetimeBefore, loadAdUnlocks()).id,
     difficulty: prefs.difficulty,
@@ -191,10 +197,10 @@ function play(prefs: StartPrefs): void {
   });
   session = s;
   playSound('start');
-  refreshHud(s.world);
+  refreshHud(s);
   // Frozen once over (or knocked out), so the death-shrink tail doesn't read as 0%.
   hudTimer = setInterval(() => {
-    if (!s.world.over && !s.world.awaitingRevive && !s.paused) refreshHud(s.world);
+    if (!s.world.over && !s.world.awaitingRevive && !s.paused) refreshHud(s);
   }, HUD_INTERVAL_MS);
   s.start();
 }

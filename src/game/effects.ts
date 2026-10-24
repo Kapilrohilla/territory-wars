@@ -1,8 +1,10 @@
 import type { MultiPoly, Vec } from '../sim/geometry';
 import type { Burn, GameEvent, World } from '../sim/types';
 import type { Camera } from './camera';
-import { LIP_OFFSET, landPath, playerColors, pointOnTrail } from './render';
-import { playerShade } from './palette';
+import { LIP_OFFSET, landPath, playerColors, pointOnTrail, prefersReducedMotion } from './render';
+import { PALETTE, playerShade } from './palette';
+import { landArea } from '../sim/territory';
+import { maxDistFrom, waveRadius, waveSeconds } from './waves';
 import { vibrate } from '../native/platform';
 
 // Captured land rises from under the board while brightening from the lip shade to the base.
@@ -10,6 +12,11 @@ const CAPTURE_S = 0.5;
 const CAPTURE_RISE_S = 0.35;
 const CAPTURE_DEPTH = 0.7;
 const CAPTURE_APPEAR_S = 0.06;
+// Capture wave (waves.ts): ripple rings trail the front by RING_GAP, fading over the wave.
+const RING_GAP = 1.2;
+const RING_COUNT = 3;
+const RING_W = 0.25;
+const RING_COLOR = 'rgba(255, 255, 255, 0.55)';
 // Dead land darkens to its lip shade, then sinks and fades.
 const DEATH_S = 0.35;
 const DEATH_DARKEN_S = 0.22;
@@ -51,18 +58,52 @@ const SPARK_LEN_S = 0.045;
 const FLASH_S = 0.18;
 const FLASH_POOL = 4;
 const FLASH_R = 1.1;
+// Knockout impact at the victim's head: a white flash ring (0 → 2.5 u over 160 ms, fading)
+// and 8 short white lines radiating out a little longer. Skipped under reduced motion.
+const IMPACT_RING_S = 0.16;
+const IMPACT_RING_R = 2.5;
+const IMPACT_LINE_S = 0.22;
+const IMPACT_LINES = 8;
+const IMPACT_LINE_LEN = 0.8;
+const IMPACT_POOL = 4;
+/** The floating badge over the human's head on a knockout (the banner carries the words). */
+export const KILL_BADGE = '+1';
 
 /** Pooled spark particle; `t >= life` means free. */
 type Spark = { x: number; y: number; vx: number; vy: number; t: number; life: number };
 type Flash = { x: number; y: number; t: number };
+type Impact = { x: number; y: number; t: number; rot: number };
 
 type Chunk = {
   x: number; y: number; vx: number; vy: number; rot: number; vr: number;
   size: number; color: string; t: number; life: number;
 };
 
-/** Land rising into place; `fromColorIndex` is a victim's colour it flips from (taken land). */
-type CaptureFx = { playerId: number; colorIndex: number; region: MultiPoly; t: number; fromColorIndex?: number };
+/** A rival's land as it was before a capture took part of it (drawn clipped to the region). */
+type Under = { colorIndex: number; land: MultiPoly };
+
+/**
+ * Land rising into place; `fromColorIndex` is a victim's colour it flips from (taken land),
+ * `under` the rivals' land a capture stole from (only the part inside the region shows).
+ * With a `wave`, it fills outward from (ox, oy) over waveS seconds to cover maxDist; without
+ * one (a spawn's land) it fades in everywhere at once. `life` is how long it stays.
+ */
+type CaptureFx = {
+  playerId: number; colorIndex: number; region: MultiPoly; t: number; fromColorIndex?: number;
+  under?: Under[]; wave: boolean; ox: number; oy: number; waveS: number; maxDist: number; life: number;
+};
+
+/** A capture fading in; with `origin`, as a wave spreading from it (see waves.ts). */
+function captureFx(playerId: number, colorIndex: number, region: MultiPoly, origin: Vec | null,
+  fromColorIndex?: number, under?: Under[]): CaptureFx {
+  const waveS = origin ? waveSeconds(landArea(region)) : 0;
+  return {
+    playerId, colorIndex, region, t: 0, fromColorIndex, under,
+    wave: origin !== null, ox: origin?.x ?? 0, oy: origin?.y ?? 0, waveS,
+    maxDist: origin ? maxDistFrom(region, origin) : 0,
+    life: Math.max(CAPTURE_S, waveS),
+  };
+}
 type TextFx = { text: string; colorIndex: number; at: Vec; t: number; size: number; stack: number; shown: number };
 type DyingFx = { colorIndex: number; land: MultiPoly; t: number };
 
@@ -186,6 +227,58 @@ function fillShape(ctx: CanvasRenderingContext2D, m: MultiPoly, colorIndex: numb
   ctx.restore();
 }
 
+/** The rivals' land a capture stole, clipped to its region, at `alpha`. */
+function drawUnder(ctx: CanvasRenderingContext2D, c: CaptureFx, alpha: number): void {
+  if (!c.under) return;
+  ctx.save();
+  ctx.clip(landPath(c.region), 'evenodd');
+  for (const u of c.under) fillShape(ctx, u.land, u.colorIndex, playerColors(u.colorIndex).base, 0, 1, alpha);
+  ctx.restore();
+}
+
+/**
+ * A capture mid-wave: unreached land shows what was there (pale arena, the land stolen from
+ * rivals, or the victim's land for an absorb); inside the front's circle it is the owner's,
+ * rising with the usual lip. Ripple rings ride just behind the front, clipped to the region.
+ */
+function drawWave(ctx: CanvasRenderingContext2D, c: CaptureFx, rise: number, bright: number): void {
+  const r = waveRadius(c.t, c.waveS, c.maxDist);
+  const done = c.t >= c.waveS;
+  if (!done) {
+    if (c.fromColorIndex !== undefined) {
+      fillShape(ctx, c.region, c.fromColorIndex, playerColors(c.fromColorIndex).base, 0, 1, 1);
+    } else {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = PALETTE.arena;
+      ctx.fill(landPath(c.region), 'evenodd');
+      drawUnder(ctx, c, 1);
+    }
+  }
+  ctx.save();
+  if (!done) {
+    ctx.beginPath();
+    ctx.arc(c.ox, c.oy, Math.max(0, r), 0, Math.PI * 2);
+    ctx.clip();
+  }
+  fillShape(ctx, c.region, c.colorIndex, playerShade(c.colorIndex, bright), CAPTURE_DEPTH * (1 - rise), rise,
+    clamp01(c.t / CAPTURE_APPEAR_S));
+  ctx.restore();
+  if (done) return;
+  ctx.save();
+  ctx.clip(landPath(c.region), 'evenodd');
+  ctx.globalAlpha = 1 - clamp01(c.t / c.waveS);
+  ctx.strokeStyle = RING_COLOR;
+  ctx.lineWidth = RING_W;
+  for (let i = 0; i < RING_COUNT; i++) {
+    const ri = r - i * RING_GAP;
+    if (ri <= RING_W) break;
+    ctx.beginPath();
+    ctx.arc(c.ox, c.oy, ri, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function createEffects(): Effects {
   let captures: CaptureFx[] = [];
   let texts: TextFx[] = [];
@@ -196,6 +289,8 @@ export function createEffects(): Effects {
   const chunks: Chunk[] = Array.from({ length: CHUNK_POOL }, () => ({
     x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, size: 0, color: '', t: 1, life: 0,
   }));
+  const impacts: Impact[] = Array.from({ length: IMPACT_POOL }, () => ({ x: 0, y: 0, t: IMPACT_LINE_S, rot: 0 }));
+  let liveImpacts = 0;
   let liveSparks = 0;
   let liveFlashes = 0;
   let liveChunks = 0;
@@ -240,6 +335,14 @@ export function createEffects(): Effects {
   };
   /** The burn each player had when last seen, so a burn sparks once. */
   const seenBurn: (Burn | null)[] = [];
+  /**
+   * Each player's land as of the last look (after the previous step's events, or the last
+   * frame): a capture's `stolen` rivals have already lost the region when its event arrives.
+   */
+  const lastLand: MultiPoly[] = [];
+  const snapLands = (world: World) => {
+    for (const p of world.players) lastLand[p.id] = p.land;
+  };
 
   const spawnBurst = (at: Vec) => {
     sparkVelocities(SPARK_COUNT, SPARK_SPEED, Math.random, burst);
@@ -258,6 +361,19 @@ export function createEffects(): Effects {
       liveFlashes++;
       break;
     }
+  };
+
+  /** The knockout flash ring and impact lines at a victim's head (not under reduced motion). */
+  const spawnImpact = (at: Vec) => {
+    if (prefersReducedMotion()) return;
+    // Reuse a free slot, else the oldest.
+    let slot = impacts[0];
+    for (const im of impacts) {
+      if (im.t >= IMPACT_LINE_S) { slot = im; break; }
+      if (im.t > slot.t) slot = im;
+    }
+    if (slot.t >= IMPACT_LINE_S) liveImpacts++;
+    slot.x = at.x; slot.y = at.y; slot.t = 0; slot.rot = Math.random() * Math.PI;
   };
 
   /** Sparks once per new burn the human started on a rival's trail. */
@@ -281,7 +397,14 @@ export function createEffects(): Effects {
         if (e.type === 'capture') {
           const p = world.players[e.playerId];
           if (e.region.length > 0) {
-            captures.push({ playerId: p.id, colorIndex: p.colorIndex, region: e.region, t: 0 });
+            // The loop closed where the head is now: the wave starts there. Unreached stolen
+            // land keeps its old owner's colour until the wave gets to it.
+            let under: Under[] | undefined;
+            for (const st of e.stolen) {
+              const v = world.players[st.playerId], land = lastLand[st.playerId];
+              if (v && land && land.length) (under ??= []).push({ colorIndex: v.colorIndex, land });
+            }
+            captures.push(captureFx(p.id, p.colorIndex, e.region, p.pos, undefined, under));
             spawnChunks(p.pos, ENTER_CHUNKS, ENTER_CHUNK_SPEED, ENTER_CHUNK_S, 0.35, playerColors(p.colorIndex).lip);
           }
           if (p.isHuman && e.gainedPct > 0) {
@@ -293,14 +416,16 @@ export function createEffects(): Effects {
           // The victim's land flips to the killer's colour instead of sinking away.
           const p = world.players[e.playerId];
           const v = world.players[e.victimId];
-          captures.push({ playerId: p.id, colorIndex: p.colorIndex, region: e.region, t: 0, fromColorIndex: v.colorIndex });
+          captures.push(captureFx(p.id, p.colorIndex, e.region, p.pos, v.colorIndex));
           if (p.isHuman && e.gainedPct > 0) pushText(formatGain(e.gainedPct), p.colorIndex, p.pos, 22);
         } else if (e.type === 'death' || e.type === 'down') {
           const p = world.players[e.playerId];
           burstDeath(world, p.id);
           const human = world.players[world.humanId];
           if (e.killerId === human.id && p.id !== human.id) {
-            pushText(killText(human.kills), p.colorIndex, human.pos, 28);
+            // The words go to the HUD's KNOCKOUT! banner; over the head floats just the +1.
+            pushText(KILL_BADGE, p.colorIndex, human.pos, 28);
+            spawnImpact(p.pos);
             cam.nudge(KILL_NUDGE);
             vibrate(KILL_VIBRATE_MS);
           }
@@ -312,9 +437,11 @@ export function createEffects(): Effects {
           captures = captures.filter((c) => c.playerId !== p.id);
         }
       }
+      snapLands(world);
     },
 
     observe(world) {
+      snapLands(world);
       for (const p of world.players) {
         if (p.burn !== (seenBurn[p.id] ?? null)) checkBurn(world, p.id);
         if (p.alive && (popLife[p.id] ?? -1) !== p.deaths) {
@@ -324,7 +451,7 @@ export function createEffects(): Effects {
           spawnT[p.id] = 0;
           if (p.land.length) {
             captures = captures.filter((c) => c.playerId !== p.id);
-            captures.push({ playerId: p.id, colorIndex: p.colorIndex, region: p.land, t: 0 });
+            captures.push(captureFx(p.id, p.colorIndex, p.land, null));
           }
         }
       }
@@ -357,6 +484,14 @@ export function createEffects(): Effects {
           if (f.t < FLASH_S) liveFlashes++;
         }
       }
+      if (liveImpacts) {
+        liveImpacts = 0;
+        for (const im of impacts) {
+          if (im.t >= IMPACT_LINE_S) continue;
+          im.t += dt;
+          if (im.t < IMPACT_LINE_S) liveImpacts++;
+        }
+      }
       if (liveChunks) {
         const drag = Math.exp(-CHUNK_DRAG * dt);
         liveChunks = 0;
@@ -382,7 +517,7 @@ export function createEffects(): Effects {
       }
       if (captures.length) {
         for (const c of captures) c.t += dt;
-        captures = captures.filter((c) => c.t < CAPTURE_S);
+        captures = captures.filter((c) => c.t < c.life);
       }
       if (texts.length) {
         const k = 1 - Math.exp(-dt / STACK_SLIDE_S);
@@ -412,13 +547,19 @@ export function createEffects(): Effects {
         fillShape(ctx, d.land, d.colorIndex, playerShade(d.colorIndex, 1 - dark), DEATH_DEPTH * sink, 1 - sink,
           1 - sink);
       }
+      const reduced = captures.length > 0 && prefersReducedMotion();
       for (const c of captures) {
         const rise = easeOutQuad(clamp01(c.t / CAPTURE_RISE_S));
         const bright = easeOutCubic(clamp01(c.t / CAPTURE_S));
+        if (c.wave && !reduced) {
+          drawWave(ctx, c, rise, bright);
+          continue;
+        }
         if (c.fromColorIndex !== undefined) {
           const from = playerColors(c.fromColorIndex);
           fillShape(ctx, c.region, c.fromColorIndex, from.base, 0, 1, 1 - bright);
         }
+        drawUnder(ctx, c, 1 - bright);
         fillShape(ctx, c.region, c.colorIndex, playerShade(c.colorIndex, bright), CAPTURE_DEPTH * (1 - rise), rise,
           clamp01(c.t / CAPTURE_APPEAR_S));
       }
@@ -438,6 +579,35 @@ export function createEffects(): Effects {
           ctx.rotate(c.rot);
           ctx.fillRect(-h, -h, h * 2, h * 2);
           ctx.restore();
+        }
+        ctx.globalAlpha = 1;
+      }
+      if (liveImpacts) {
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineCap = 'round';
+        for (const im of impacts) {
+          if (im.t >= IMPACT_LINE_S) continue;
+          if (im.t < IMPACT_RING_S) {
+            const u = im.t / IMPACT_RING_S;
+            ctx.globalAlpha = 0.9 * (1 - u);
+            ctx.lineWidth = 0.35 * (1 - 0.6 * u);
+            ctx.beginPath();
+            ctx.arc(im.x, im.y, IMPACT_RING_R * easeOutCubic(u), 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          const v = im.t / IMPACT_LINE_S;
+          const r0 = 0.9 + 1.9 * easeOutCubic(v);
+          const len = IMPACT_LINE_LEN * (1 - 0.5 * v);
+          ctx.globalAlpha = 1 - v * v;
+          ctx.lineWidth = 0.18;
+          ctx.beginPath();
+          for (let i = 0; i < IMPACT_LINES; i++) {
+            const a = im.rot + (i / IMPACT_LINES) * Math.PI * 2;
+            const c = Math.cos(a), sn = Math.sin(a);
+            ctx.moveTo(im.x + c * r0, im.y + sn * r0);
+            ctx.lineTo(im.x + c * (r0 + len), im.y + sn * (r0 + len));
+          }
+          ctx.stroke();
         }
         ctx.globalAlpha = 1;
       }
@@ -495,7 +665,7 @@ export function createEffects(): Effects {
 
     busy() {
       return captures.length > 0 || texts.length > 0 || dying.length > 0 || liveSparks > 0 || liveFlashes > 0
-        || liveChunks > 0 || livePops > 0;
+        || liveChunks > 0 || livePops > 0 || liveImpacts > 0;
     },
   };
 }
