@@ -50,7 +50,7 @@ export type DifficultyTuning = {
   /** Speed (u/s) of each front of a burning trail. */
   burnSpeed: number;
   // Smarter bots (Hard only; off for easy and normal). Same speed and rules as the player.
-  /** Hunt the human's trail near its head (cost distToBot + 0.6·path-from-head), cutting it ≥ 2 u behind the head. */
+  /** Hunt the human's trail near its head (cost distToBot + 0.6·path-from-head), cutting it ≥ 2 u behind the head; dodge the human's head (no head-ons). */
   smartHunt: boolean;
   /** With smartHunt: notice any human trail point this close (u), in any direction; 0 = off. */
   huntRadius: number;

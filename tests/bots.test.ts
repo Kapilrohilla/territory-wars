@@ -390,6 +390,24 @@ describe('hard bots (Task 8)', () => {
     expect(brains.get(1)!.state).toBe('return');
   });
 
+  it('head dodge: a hard bot turns away from a head about to meet it (normal does not)', () => {
+    const steer = (d: 'normal' | 'hard', human: Vec, humanHeading: number) => {
+      const w = arena(d, [1], v(-60, 60));
+      placeBot(w, 1, v(0, 0), 0, v(-6, 0));
+      const h = w.players[w.humanId];
+      h.pos = human; h.prevPos = human; h.heading = humanHeading; h.targetHeading = humanHeading;
+      const brains = createBrains(w);
+      brains.get(1)!.state = 'out';
+      brains.get(1)!.waypoints = [v(10, 0)];
+      return botInputs(w, brains, mulberry32(3)).get(1)!.targetHeading!;
+    };
+    // Heads 4 u apart on a collision course: they would meet at (2, 0) in 0.2 s.
+    expect(Math.abs(angleDiff(steer('hard', v(4, 0), Math.PI), Math.PI))).toBeLessThan(0.05); // straight away
+    expect(Math.abs(angleDiff(steer('normal', v(4, 0), Math.PI), 0))).toBeLessThan(0.05);
+    // Same distance but passing 5 u to the side: no dodge.
+    expect(Math.abs(angleDiff(steer('hard', v(4, 5), Math.PI), 0))).toBeLessThan(0.05);
+  });
+
   it('bigger loops: hard waypoints may reach further than waypointMax', () => {
     let far = 0;
     for (let seed = 1; seed <= 40; seed++) {

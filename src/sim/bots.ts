@@ -43,7 +43,7 @@ const SELF_IGNORE_LEN = 1.5; // u of own trail nearest the head ignored for look
 // itself always wins (d(head) ≤ d(q) + path(q)) and the bot rams it head-on instead of cutting.
 const HEAD_COST = 0.6;
 const CUT_BEHIND = 2; // u of path length behind the head the nearest aim point sits (slot 0)
-const REACH_SLACK_S = 0.4; // a hunt must arrive within this long after the human gets home
+const REACH_SLACK_S = 0.7; // a hunt must arrive within this long after the human gets home
 const PACK_EVAL_S = 0.5; // pack commitment is re-picked this often (world time)
 const PINCER_GAP = 6; // u of human path length between committed bots' aim points
 const RAID_RANGE = 30; // u; a raid only targets human land this close
@@ -52,6 +52,10 @@ const SAFE_MARGIN = 2; // u
 const SAFE_TRIP_TRIES = 3; // safeReturn: candidate start vertices per trip (the most open one wins)
 const SAFE_TRIP_LOOK = 10; // u past the start vertex where a trip's openness is measured
 const SAFE_TRIP_WALL = 20; // u; the wall counts as a rival head this much further away
+// Head dodge (Hard): heads closing to within DODGE_MISS (u) inside DODGE_T (s), at current
+// headings and speed, make the bot turn away from where the human's head will be.
+const DODGE_T = 0.6;
+const DODGE_MISS = 2;
 
 const dist = (a: Vec, b: Vec) => Math.hypot(a.x - b.x, a.y - b.y);
 const trailLen = (p: Player) => p.trail.length * CONFIG.TRAIL_STEP;
@@ -423,7 +427,7 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
   }
   if (aim) {
     brain.state = 'hunt';
-    return finish(p, steerTo(p, aim));
+    return finish(p, dodgeHead(world, p, tune, steerTo(p, aim)));
   }
 
   if (brain.state === 'return' && inside && p.trail.length === 0) brain.state = 'home';
@@ -442,7 +446,30 @@ function think(world: World, p: Player, brain: BotBrain, rng: () => number): num
     target = inside && p.trail.length > 0 ? p.pos : nearestOnLand(p);
     if (!target) target = { x: 0, y: 0 };
   }
-  return finish(p, target ? steerTo(p, target) : p.heading);
+  return finish(p, dodgeHead(world, p, tune, target ? steerTo(p, target) : p.heading));
+}
+
+/**
+ * Smart bots (Hard) never trade heads with the human: if, at current headings and speed, the
+ * two heads would pass within DODGE_MISS in the next DODGE_T seconds, the bot steers straight
+ * away from where the human's head will be at the closest point (the human can't catch up
+ * from behind at the same speed).
+ */
+function dodgeHead(world: World, p: Player, tune: DifficultyTuning, ang: number): number {
+  if (!tune.smartHunt) return ang;
+  const h = world.players[world.humanId];
+  if (!h.alive) return ang;
+  const rx = h.pos.x - p.pos.x, ry = h.pos.y - p.pos.y;
+  const reach = DODGE_MISS + 2 * CONFIG.SPEED * DODGE_T;
+  if (rx * rx + ry * ry > reach * reach) return ang;
+  const vx = (Math.cos(h.heading) - Math.cos(p.heading)) * CONFIG.SPEED;
+  const vy = (Math.sin(h.heading) - Math.sin(p.heading)) * CONFIG.SPEED;
+  const v2 = vx * vx + vy * vy;
+  const t = v2 > 1e-9 ? Math.min(DODGE_T, Math.max(0, -(rx * vx + ry * vy) / v2)) : 0;
+  const mx = rx + vx * t, my = ry + vy * t;
+  if (mx * mx + my * my >= DODGE_MISS * DODGE_MISS) return ang;
+  const hx = h.pos.x + Math.cos(h.heading) * CONFIG.SPEED * t, hy = h.pos.y + Math.sin(h.heading) * CONFIG.SPEED * t;
+  return Math.atan2(p.pos.y - hy, p.pos.x - hx);
 }
 
 function finish(p: Player, ang: number): number {
