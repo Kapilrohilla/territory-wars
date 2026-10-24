@@ -1313,7 +1313,7 @@ export function createScreens(root: HTMLElement): Screens {
     if (offer) closeRevive();
     if (pauseHandlers) closePause();
     if (shown !== over) dropAd();
-    if (shown !== hud) onPauseCb = null;
+    if (shown !== hud) { onPauseCb = null; overtakeHook = null; }
   };
   syncAll();
   only(start);
