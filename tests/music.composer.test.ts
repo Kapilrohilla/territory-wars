@@ -74,9 +74,26 @@ describe('music composer', () => {
   });
 
   it('layers_for_burning_is_drums_and_root', () => {
-    const l = layersFor(3, 1);
-    for (const x of ['pad', 'pluck', 'lead'] as const) expect(l.has(x)).toBe(false);
-    for (const x of ['kick', 'hat', 'bass'] as const) expect(l.has(x)).toBe(true);
+    // Toms, not a kick: the burning heartbeat isn't tempo-locked and a kick would beat against it.
+    for (const ex of [0, 1]) {
+      expect(sorted(layersFor(3, ex))).toEqual(['bass', 'clap', 'fill', 'hat']);
+    }
+  });
+
+  it('burning_drives_on_toms_claps_and_hats_with_the_root_in_the_bass', () => {
+    const c = createComposer({ seed: 12 });
+    for (const [i, notes] of bars(c, 3, 0, 8).entries()) {
+      expect(has(notes, 'kick')).toBe(false);
+      const toms = notes.filter((n) => n.layer === 'fill');
+      expect(toms.length).toBeGreaterThanOrEqual(4);
+      // Even in the lowest round key the toms' body (half the note, see VOICES.fill) stays ≥ 150 Hz.
+      for (const n of toms) expect((440 * 2 ** ((n.semi - 3) / 12)) / 2).toBeGreaterThanOrEqual(150);
+      expect(notes.filter((n) => n.layer === 'clap').map((n) => n.step - i * STEPS_PER_BAR)).toEqual([4, 12]);
+      expect(has(notes, 'hat')).toBe(true);
+      const bass = notes.filter((n) => n.layer === 'bass');
+      expect(bass.length).toBeGreaterThan(0);
+      expect(new Set(bass.map((n) => n.semi)).size).toBe(1);
+    }
   });
 
   it('layers_for_tiers_and_excitement', () => {
@@ -85,7 +102,7 @@ describe('music composer', () => {
     expect(sorted(layersFor(0, MELODY_AT))).toEqual(['clap', 'kick', 'lead', 'pad', 'pluck']);
     expect(layersFor(0, MELODY_AT).has('stab')).toBe(false);
     expect(layersFor(1, FULL_AT).has('stab')).toBe(true);
-    expect(layersFor(3, FULL_AT).has('clap')).toBe(false);
+    for (const x of ['kick', 'lead', 'stab'] as const) expect(layersFor(3, FULL_AT).has(x)).toBe(false);
   });
 
   it('excited_danger_adds_clap_but_no_kick', () => {
@@ -376,6 +393,9 @@ describe('music composer events', () => {
     expect(out.length).toBeGreaterThan(0);
     for (const n of out) expect(['lead', 'stab']).toContain(n.layer);
     expect(c.excitement).toBe(1);
+    // The lift waits for the next bar so it never clashes with the one still ringing.
+    expect(c.keyOffset).toBe(0);
+    c.bar(1);
     expect(c.keyOffset).toBe(1);
   });
 
@@ -410,14 +430,38 @@ describe('music composer events', () => {
     expect(c.keyOffset).toBe(3);
   });
 
-  it('key_offset_reported_right_after_events', () => {
-    // The player reads it straight away to retune effects; it applies it from the next bar it schedules.
+  it('key_lift_waits_for_the_next_bar', () => {
+    // keyOffset is the offset of the most recently composed bar; a milestone lifts the next one.
     const c = createComposer({ seed: 1 });
     c.bar(0);
     c.events([{ e: 'milestone' }], 4);
-    expect(c.keyOffset).toBe(1);
+    expect(c.keyOffset).toBe(0);
     c.bar(1);
     expect(c.keyOffset).toBe(1);
+    c.bar(2);
+    expect(c.keyOffset).toBe(1);
+  });
+
+  it('two_milestones_before_a_bar_lift_it_twice_up_to_the_cap', () => {
+    const c = createComposer({ seed: 1 });
+    c.bar(0);
+    c.events([{ e: 'milestone' }], 2);
+    c.events([{ e: 'milestone' }], 4);
+    c.bar(1);
+    expect(c.keyOffset).toBe(2);
+    for (let i = 0; i < 3; i++) c.events([{ e: 'milestone' }], 20 + 2 * i);
+    c.bar(2);
+    expect(c.keyOffset).toBe(3);
+  });
+
+  it('a_lift_pending_at_the_end_never_applies', () => {
+    // The closing cadence spans two bars and must stay in one key.
+    const c = createComposer({ seed: 1 });
+    c.bar(0);
+    c.events([{ e: 'milestone' }, { e: 'win' }], 4);
+    c.bar(1);
+    c.bar(2);
+    expect(c.keyOffset).toBe(0);
   });
 
   it('stingers_fit_the_bar_they_land_in', () => {
@@ -509,7 +553,7 @@ describe('music composer events', () => {
     expect(has(first, 'pad')).toBe(true);
     const next = c.bar(1);
     expect(has(next, 'pad')).toBe(false);
-    expect(has(next, 'kick')).toBe(true);
+    expect(has(next, 'fill')).toBe(true);
   });
 
   it('steal_while_burning_still_riffs_but_bars_stay_bare', () => {
@@ -518,7 +562,7 @@ describe('music composer events', () => {
     c.bar(0);
     expect(has(c.events([{ e: 'steal', size: 1 }], 8), 'lead')).toBe(true);
     for (let i = 1; i < 4; i++) {
-      for (const n of c.bar(i)) expect(['kick', 'hat', 'bass']).toContain(n.layer);
+      for (const n of c.bar(i)) expect(['fill', 'clap', 'hat', 'bass']).toContain(n.layer);
     }
   });
 });

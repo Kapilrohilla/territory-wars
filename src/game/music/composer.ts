@@ -1,9 +1,10 @@
 /**
  * The adaptive music composer (pure and seeded; no Web Audio, no DOM). Each bar() returns
  * the notes for one bar from the current mood and excitement: a soft pad and plucks when
- * calm, bass and light drums outside, a tighter pulse in danger, bare drums while burning,
+ * calm, bass and light drums outside, a tighter pulse in danger, bare toms and claps while burning,
  * and a short hummable motif only while excitement is high. events() turns game cues into
- * beat-quantized stingers, excitement boosts, milestone key lifts, going down and the ending.
+ * beat-quantized stingers, excitement boosts, milestone key lifts (from the next bar), going down
+ * and the ending.
  * Pitches are semitones vs A4 in C major; the player adds the round key and keyOffset.
  */
 import { DANGER_SHOW } from '../danger';
@@ -47,8 +48,8 @@ export type Composer = {
   /** One call per sim step's cues; returns stinger notes at or after quantize(nowStep). */
   events(list: { e: MusicEvent; size?: number }[], nowStep: number): NoteEv[];
   readonly excitement: number;
-  /** 0..3 milestones passed, added on top of the round key. Updates as soon as events() sees a
-   * milestone; the player applies it from the next bar it schedules. */
+  /** 0..3: the key lift (semitones over the round key) of the most recently composed bar. A
+   * milestone lifts the next bar composed while playing, so it never clashes with the bar ringing. */
   readonly keyOffset: number;
   readonly state: 'playing' | 'down' | 'ended';
 };
@@ -63,7 +64,8 @@ const TIER_LAYERS: Record<Tier, Layer[]> = {
   0: ['pad', 'pluck'],
   1: ['pad', 'pluck', 'bass', 'hat'],
   2: ['pad', 'pluck', 'bass', 'hat', 'clap'],
-  3: ['kick', 'hat', 'bass'],
+  // No kick while burning: the heartbeat isn't tempo-locked and a kick would beat against it.
+  3: ['fill', 'clap', 'hat', 'bass'],
 };
 
 export function layersFor(tier: Tier, excitement: number): Set<Layer> {
@@ -113,6 +115,8 @@ const RIFF_SMALL_SHAPES = [[0, 2, 1, 3, -1], [1, 3, 2, 3, -1], [0, 1, 3, 2, -1],
 const RIFF_BIG_SHAPES = [[0, 2, 1, 3, 2, 3, -1], [1, 0, 2, 1, 3, 2, -1], [0, 1, 2, 1, 3, 2, -1]];
 /** Kill fill: one beat of hits; the last climbs one whole tone per extra streak. */
 const FILL_SEMIS = [0, 0, 2, 4];
+/** Burning: a driving tom figure, [step, semi]; a low A and a high E (bodies ≥ 150 Hz in any round key). */
+const BURN_TOMS = [[0, 0], [3, 0], [6, 7], [8, 0], [10, 0], [11, 7], [14, 7]];
 const MAX_STREAK_LIFT = 4;
 const PAD_BASES = [0, 3];
 
@@ -163,11 +167,13 @@ export function createComposer(opts: { seed: number }): Composer {
     return Math.min(len - 1, Math.max(0, n));
   };
 
-  let pending: MusicMood = { tier: 0, danger: 0 };
+  const pending: MusicMood = { tier: 0, danger: 0 };
   let excitement = 0;
   /** Bars still held at FULL_AT or above by a steal. */
   let hold = 0;
   let keyOffset = 0;
+  /** Milestones heard since the last bar; they lift the next bar composed while playing. */
+  let lifts = 0;
   let state: 'playing' | 'down' | 'ended' = 'playing';
   /** The bar lead stays quiet before this step so a steal riff is heard on its own. */
   let riffEnd = -Infinity;
@@ -266,7 +272,7 @@ export function createComposer(opts: { seed: number }): Composer {
   }
 
   return {
-    setMood(m) { pending = { ...m }; },
+    setMood(m) { pending.tier = m.tier; pending.danger = m.danger; },
     get excitement() { return excitement; },
     get keyOffset() { return keyOffset; },
     get state() { return state; },
@@ -279,7 +285,7 @@ export function createComposer(opts: { seed: number }): Composer {
         return [];
       }
       const q = quantize(nowStep);
-      for (const x of list) if (x.e === 'milestone') keyOffset = Math.min(MAX_KEY_OFFSET, keyOffset + 1);
+      for (const x of list) if (x.e === 'milestone') lifts++;
       const end = list.find((x) => x.e === 'win' || x.e === 'gameover');
       if (end) {
         state = 'ended';
@@ -301,6 +307,8 @@ export function createComposer(opts: { seed: number }): Composer {
 
     bar(index) {
       if (state !== 'playing') return [];
+      keyOffset = Math.min(MAX_KEY_OFFSET, keyOffset + lifts);
+      lifts = 0;
       const { tier } = pending;
       const wantTense = tier === 2;
       if (!prog || index % BARS_PER_PHRASE === 0 || wantTense !== tense) newPhrase(wantTense);
@@ -345,9 +353,10 @@ export function createComposer(opts: { seed: number }): Composer {
       }
 
       if (layers.has('kick')) {
-        const ks = tier === 3 ? [0, 4, 8, 12] : rng() < 0.5 ? [0, 8] : [0, 8, 11];
+        const ks = rng() < 0.5 ? [0, 8] : [0, 8, 11];
         for (const s of ks) add('kick', s, 0, 1, s % 8 === 0 ? 0.8 : 0.6);
       }
+      if (layers.has('fill')) for (const [s, semi] of BURN_TOMS) add('fill', s, semi, 1, s % 8 === 0 ? 0.6 : 0.45);
       if (layers.has('clap')) for (const s of [4, 12]) add('clap', s, 0, 1, 0.55);
       if (layers.has('hat')) {
         let hits = mutate(hatT, 10);
