@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { connectMaster, playSound, setMuted, unlockAudio, type SoundName } from '../src/game/sound';
+import { LIMITER_TRIM, connectMaster, playSound, setMuted, unlockAudio, type SoundName } from '../src/game/sound';
 
 /** Records every gain envelope a sound schedules, so peaks and ramps can be checked. */
 type Call = { kind: string; v: number; t: number };
@@ -167,11 +167,15 @@ describe('sound', () => {
       Object.assign({ name, connect: (to: { name: string }) => { links.push([name, to.name]); } }, extra);
     const param = () => ({ value: 0 });
     const comp = node('limiter', { threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() });
-    const withComp = { destination: node('out'), createDynamicsCompressor: () => comp };
+    const trim = node('trim', { gain: param() });
+    const withComp = { destination: node('out'), createDynamicsCompressor: () => comp, createGain: () => trim };
     const master = node('master');
     const got = connectMaster(withComp as unknown as AudioContext, master as unknown as GainNode);
     expect(got).toBe(comp);
-    expect(links).toEqual([['master', 'limiter'], ['limiter', 'out']]);
+    expect(links).toEqual([['master', 'limiter'], ['limiter', 'trim'], ['trim', 'out']]);
+    // Trim cancels the compressor's automatic makeup gain, so quiet cues keep their level.
+    expect(trim.gain.value).toBe(LIMITER_TRIM);
+    expect(LIMITER_TRIM).toBeCloseTo(10 ** (-4.5 / 20), 1);
     expect(comp.threshold.value).toBe(-10);
     expect(comp.knee.value).toBe(6);
     expect(comp.ratio.value).toBe(4);

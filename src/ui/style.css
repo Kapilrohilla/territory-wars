@@ -1027,6 +1027,10 @@ button:focus-visible,
   visibility: visible;
   transition: opacity 200ms ease-out, visibility 0s;
 }
+/* Transitions don't run out of display:none, so a pill shown from a collapsed row fades in here. */
+@starting-style {
+  .tw-burn-pill.tw-on, .tw-danger-pill.tw-on { opacity: 0; }
+}
 /* Neither pill on (set after the fade-out): their row takes no height. */
 .tw-pills-off > .tw-burn-pill, .tw-pills-off > .tw-danger-pill { display: none; }
 .tw-burn-pill {

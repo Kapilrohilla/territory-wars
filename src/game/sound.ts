@@ -181,6 +181,9 @@ export function spatialFor(at: Vec, view: ListenerView, head: Vec, dir: boolean)
  * Without createDynamicsCompressor (old engines, test fakes) master goes straight out.
  * Returns the limiter, or null.
  */
+/** Cancels the limiter's automatic makeup gain (≈ −4.5 dB). */
+export const LIMITER_TRIM = 0.6;
+
 export function connectMaster(c: AudioContext, m: GainNode): DynamicsCompressorNode | null {
   if (typeof c.createDynamicsCompressor !== 'function') {
     m.connect(c.destination);
@@ -192,8 +195,13 @@ export function connectMaster(c: AudioContext, m: GainNode): DynamicsCompressorN
   lim.ratio.value = 4;
   lim.attack.value = 0.003;
   lim.release.value = 0.15;
+  // The spec gives every compressor automatic makeup gain (about +4.5 dB at these
+  // settings); trim it back so the limiter only catches pile-ups, not the whole mix.
+  const trim = c.createGain();
+  trim.gain.value = LIMITER_TRIM;
   m.connect(lim);
-  lim.connect(c.destination);
+  lim.connect(trim);
+  trim.connect(c.destination);
   return lim;
 }
 
