@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   dangerSegments, heartbeatSeconds,
   buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
-  highestBest, hudAlerts, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
+  highestBest, hudAlerts, milestoneRibbonText, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
 import { isVibrationOn, setVibrationOn } from '../src/native/platform';
 import { COLOR_NAMES, PALETTE } from '../src/game/palette';
@@ -248,5 +248,18 @@ describe('danger pill', () => {
     expect(heartbeatSeconds(1)).toBeCloseTo(0.45);
     expect(heartbeatSeconds(0.5)).toBeCloseTo(0.75);
     expect(heartbeatSeconds(0.9)).toBeLessThan(heartbeatSeconds(0.4));
+  });
+});
+
+describe('milestoneRibbonText', () => {
+  it('names each milestone tier', () => {
+    expect(milestoneRibbonText(0)).toBe('10% CLAIMED!');
+    expect(milestoneRibbonText(1)).toBe('25% CLAIMED!');
+    expect(milestoneRibbonText(2)).toBe('HALF THE MAP!');
+  });
+
+  it('clamps an out-of-range tier', () => {
+    expect(milestoneRibbonText(-1)).toBe('10% CLAIMED!');
+    expect(milestoneRibbonText(7)).toBe('HALF THE MAP!');
   });
 });

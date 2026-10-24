@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createSfxState, soundsFor, STREAK_WINDOW_S, type Cue, type SfxState } from '../src/game/sfxEvents';
+import { waveSeconds } from '../src/game/waves';
 import { captureNotes, MAX_STREAK, STREAK_STEPS } from '../src/game/sound';
 import { createWorld } from '../src/sim/world';
 import { circleRing } from '../src/sim/geometry';
@@ -26,7 +27,7 @@ function setHumanPct(world: World, share: number) {
 
 describe('soundsFor', () => {
   it('plays capture only for the human gaining land, carrying the gain', () => {
-    expect(soundsFor([cap(0, 0.4)], w, createSfxState())).toEqual([{ name: 'capture', pct: 0.4, delay: 0 }]);
+    expect(soundsFor([cap(0, 0.4)], w, createSfxState())).toEqual([{ name: 'capture', pct: 0.4, delay: 0, durationS: waveSeconds(0) }]);
     expect(once([cap(3, 0.4)])).toEqual(none);
     expect(once([cap(0, 0)])).toEqual(none);
   });
@@ -139,6 +140,24 @@ describe('kill streaks', () => {
     soundsFor([killBy(3, 4)], world, s);
     expect(s.streak).toBe(0);
     expect(killAt(world, s, 3)).toBe(1);
+  });
+});
+
+describe('capture sweep length', () => {
+  it('matches the wave of the largest region the human captured this step', () => {
+    const sq = (side: number): GameEvent => ({
+      type: 'capture', playerId: 0, gainedPct: 1, stolen: [],
+      region: [[[{ x: 0, y: 0 }, { x: side, y: 0 }, { x: side, y: side }, { x: 0, y: side }]]],
+    });
+    const cue = soundsFor([sq(10), sq(30)], w, createSfxState()).find((c) => c.name === 'capture');
+    expect(cue?.durationS).toBeCloseTo(waveSeconds(900), 9);
+  });
+
+  it("an absorbed victim's land counts too", () => {
+    const region = [[[{ x: 0, y: 0 }, { x: 20, y: 0 }, { x: 20, y: 20 }, { x: 0, y: 20 }]]];
+    const cue = soundsFor([{ type: 'absorb', playerId: 0, victimId: 2, gainedPct: 2, region }], w, createSfxState())
+      .find((c) => c.name === 'capture');
+    expect(cue?.durationS).toBeCloseTo(waveSeconds(400), 9);
   });
 });
 

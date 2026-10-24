@@ -28,6 +28,8 @@ export type SoundName =
 export type SoundOpts = {
   /** capture: land gained, in % of the arena. */
   pct?: number;
+  /** capture: length (s) of the rising sweep under the chord, matching the capture wave (waves.ts). */
+  durationS?: number;
   /** kill: how many quick kills came before this one (0..4), one scale step each. */
   streak?: number;
   /** milestone: 0, 1, 2 for 10 %, 25 %, 50 %. */
@@ -137,6 +139,8 @@ type NoiseOpts = {
   type?: BiquadFilterType;
   /** Pulse the loudness with a smooth sine tremolo at this rate (Hz). */
   pulseHz?: number;
+  /** Fade-in time (s); 4 ms when unset. */
+  attack?: number;
 };
 
 let noiseBuf: AudioBuffer | null = null;
@@ -149,6 +153,7 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
   const t = c.currentTime + offset + (o.delay ?? 0);
   const src = c.createBufferSource();
   src.buffer = noiseBuf;
+  src.loop = true; // the buffer is 0.5 s; longer sounds (the capture sweep) loop it
   const f = c.createBiquadFilter();
   f.type = o.type ?? 'bandpass';
   f.frequency.setValueAtTime(o.freq, t);
@@ -156,7 +161,7 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
   f.Q.value = o.q ?? 1;
   const g = c.createGain();
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(Math.min(o.gain, MAX_GAIN), t + 0.004);
+  g.gain.linearRampToValueAtTime(Math.min(o.gain, MAX_GAIN), t + (o.attack ?? 0.004));
   g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
   src.connect(f);
   f.connect(g);
@@ -227,6 +232,15 @@ const SOUNDS: Record<SoundName, Synth> = {
       const at = 2 * 0.065;
       [27, 31, 34].forEach((s, i) => tone(c, out, { f0: note(s), dur: 0.08, gain: 0.025, delay: at + 0.03 + i * 0.04 }));
       noise(c, out, { dur: 0.22, gain: 0.02, freq: 7000, q: 0.6, type: 'highpass', delay: at });
+    }
+    const sweep = o.durationS ?? 0;
+    if (sweep > 0) {
+      // A rising "whoosh" as long as the wave: a soft triangle glide (C5 → C6, a touch higher
+      // for bigger gains) over band-passed noise climbing 700 Hz → 3.2 kHz, all inside the
+      // 150 Hz–4 kHz band phone speakers play. It swells in so the chord stays on top.
+      const top = big ? 2.25 : 2;
+      tone(c, out, { type: 'triangle', f0: note(3), f1: note(3) * top, dur: sweep, gain: gain * 0.45, attack: sweep * 0.5 });
+      noise(c, out, { dur: sweep, gain: 0.03, freq: 700, freqEnd: 3200, q: 1.2, attack: sweep * 0.6 });
     }
   },
   steal(c, out) {

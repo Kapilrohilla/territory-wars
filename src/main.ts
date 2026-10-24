@@ -149,6 +149,10 @@ function play(prefs: StartPrefs): void {
   const s = createSession(canvas, {
     minimap: ui.minimap,
     hudRects: () => ui.hudRects(),
+    onCue: (cue) => {
+      if (cue.name === 'capture') ui.bumpPct();
+      else if (cue.name === 'milestone') ui.showMilestone(cue.tier ?? 0, cue.delay);
+    },
     humanName: prefs.name,
     humanSkin: loadSkin(lifetimeBefore, loadAdUnlocks()).id,
     difficulty: prefs.difficulty,

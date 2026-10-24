@@ -839,7 +839,18 @@ button:focus-visible,
   color: var(--ink-muted);
 }
 .tw-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--periwinkle); box-shadow: 0 0 0 2px var(--card), 0 0 0 3px var(--line); }
-.tw-pct { font: 900 32px var(--font-display); line-height: 1.1; letter-spacing: -0.01em; }
+.tw-pct { position: relative; font: 900 32px var(--font-display); line-height: 1.1; letter-spacing: -0.01em; }
+/* Capture bump (screens.ts bumpCard): the card scales from its corner; a tiny ▲ floats up. */
+.tw-area { transform-origin: 0 0; }
+.tw-pct-up {
+  position: absolute;
+  top: 2px;
+  margin-left: 4px;
+  font-size: 13px;
+  color: var(--revive-lip);
+  opacity: 0;
+  pointer-events: none;
+}
 .tw-pct-sign { font-size: 0.55em; margin-left: 2px; color: var(--ink-muted); }
 .tw-area-foot {
   display: flex;
@@ -947,6 +958,37 @@ button:focus-visible,
 }
 .tw-burn-pill.tw-on { animation: tw-pulse 900ms ease-in-out infinite alternate; }
 .tw-burn-pill .tw-icon { width: 20px; height: 20px; color: var(--ember); }
+/* Milestone ribbon: gold with a lip, ink text; slides in and out (WAAPI) with confetti specks. */
+.tw-ribbon {
+  grid-area: 2 / 1;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 20px;
+  border-radius: 14px;
+  background: #ffc93c;
+  box-shadow: 0 4px 0 #c99a1e, 0 10px 20px rgba(201, 154, 30, 0.35);
+  color: var(--ink);
+  font: 900 18px var(--font-display);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+.tw-ribbon .tw-icon { width: 16px; height: 16px; color: var(--ink); }
+/* Text above the confetti specks that fly out from behind it. */
+.tw-ribbon-text, .tw-ribbon .tw-icon { position: relative; z-index: 1; }
+.tw-speck {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 7px;
+  height: 10px;
+  border-radius: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+.tw-ribbon.tw-still .tw-speck { display: none; }
 @keyframes tw-pulse { from { transform: scale(1); } to { transform: scale(1.04); } }
 
 /* "Far from home": translucent white pill, beating heart, 3-segment ember meter. */

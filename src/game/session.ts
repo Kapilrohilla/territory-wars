@@ -8,7 +8,7 @@ import { createInput } from './input';
 import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
 import { drawMinimap } from './minimap';
-import { createSfxState, soundsFor } from './sfxEvents';
+import { createSfxState, soundsFor, type Cue } from './sfxEvents';
 import { playSound } from './sound';
 import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
 import { createMoodState, moodEvents, moodOf } from './moods';
@@ -47,6 +47,11 @@ export type SessionOpts = {
    * of. Read on resize and about once a second (the leaderboard grows), never per frame.
    */
   hudRects?: () => readonly Rect[];
+  /**
+   * Every sound cue as it plays (even when muted), for HUD reactions that follow the same
+   * moments: a human 'capture' bumps the % card, a 'milestone' shows the ribbon.
+   */
+  onCue?: (cue: Cue) => void;
 };
 
 /** How often (ms) the HUD rects are re-read while the round runs. */
@@ -195,6 +200,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     for (const cue of soundsFor(world.events, world, sfx)) {
       playSound(cue.name, cue);
       tension.heard(cue.name);
+      opts.onCue?.(cue);
     }
   };
   /** The human's share on the last step it was alive (see finalSharePct). */

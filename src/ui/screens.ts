@@ -11,6 +11,7 @@ import type { Lifetime } from './progress';
 import { createSkinsScreen, paintSkin, type SkinsView } from './skinsScreen';
 import type { Skin } from '../game/skins';
 import { DANGER_SHOW } from '../game/danger';
+import { MILESTONES } from '../game/sfxEvents';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -114,6 +115,13 @@ export const DEFAULT_NAME = 'You';
 export function cleanName(raw: string): string {
   const n = raw.replace(/\s+/g, ' ').trim().slice(0, NAME_MAX);
   return n || DEFAULT_NAME;
+}
+
+/** The gold ribbon's words for milestone `tier` (MILESTONES index): "10% CLAIMED!" … "HALF THE MAP!". */
+export function milestoneRibbonText(tier: number): string {
+  const i = Math.max(0, Math.min(MILESTONES.length - 1, Math.floor(tier)));
+  const mark = MILESTONES[i];
+  return mark === 50 ? 'HALF THE MAP!' : `${mark}% CLAIMED!`;
 }
 
 export type HudAlerts = { burning: boolean; shielded: boolean };
@@ -290,11 +298,36 @@ export type Screens = {
   updateHud(world: World, now: number, danger?: number): boolean;
   /** Advances the % counter animation; returns true while it is still animating. */
   tickHud(now: number): boolean;
+  /** The human just captured land: the % card bumps (not under reduced motion). */
+  bumpPct(): void;
+  /** The human first passed milestone `tier` (MILESTONES index): a gold ribbon, after `delayS`. */
+  showMilestone(tier: number, delayS?: number): void;
   showOver(stats: OverStats, onAgain: () => void, onHome: () => void, nativeAd?: NativeAdSlot): void;
   /** Revive modal over the (frozen) game and HUD, with a REVIVE_COUNTDOWN_MS countdown. */
   showRevive(info: ReviveInfo, handlers: ReviveHandlers): void;
   hideRevive(): void;
 };
+
+/** % card bump on a capture: up to 1.12× and back, with a ▲ that floats up and fades. */
+const BUMP_MS = 220;
+const BUMP_KEYS: Keyframe[] = [{ transform: 'scale(1)' }, { transform: 'scale(1.12)', offset: 0.4 }, { transform: 'scale(1)' }];
+const UP_MS = 600;
+const UP_KEYS: Keyframe[] = [
+  { opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'translateY(0)', offset: 0.2 },
+  { opacity: 0, transform: 'translateY(-10px)' },
+];
+/** Milestone ribbon: slides down in, holds, slides back up; 1.6 s in all. */
+const RIBBON_MS = 1600;
+const RIBBON_KEYS: Keyframe[] = [
+  { transform: 'translateY(-28px) scale(0.9)', opacity: 0 },
+  { transform: 'translateY(0) scale(1.04)', opacity: 1, offset: 0.12 },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.18 },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.85 },
+  { transform: 'translateY(-20px) scale(0.95)', opacity: 0 },
+];
+const RIBBON_SPECKS = 14;
+const SPECK_MS = 900;
+const SPECK_COLORS = ['#FFC93C', '#FF7A59', '#8DAAEC', '#2ED47A', '#F48FB1', '#C99A1E'];
 
 type RowEls = { root: HTMLElement; rank: HTMLElement; swatch: HTMLElement; name: HTMLElement; pct: HTMLElement; key: string };
 
@@ -601,7 +634,9 @@ export function createScreens(root: HTMLElement): Screens {
   areaHead.append(areaDot, el('span', undefined, 'My area'));
   const pctEl = el('div', 'tw-pct tw-num');
   const pctNum = el('span', undefined, '0.00');
-  pctEl.append(pctNum, el('span', 'tw-pct-sign', '%'));
+  const pctUp = el('span', 'tw-pct-up', '▲');
+  pctUp.setAttribute('aria-hidden', 'true');
+  pctEl.append(pctNum, el('span', 'tw-pct-sign', '%'), pctUp);
   const areaFoot = el('div', 'tw-area-foot');
   const burnTag = el('span', 'tw-burn-tag');
   burnTag.append(icon('flame'), el('span', undefined, 'Burning'));
@@ -652,7 +687,54 @@ export function createScreens(root: HTMLElement): Screens {
   const segs: HTMLElement[] = [];
   for (let i = 0; i < 3; i++) { const sg = el('span', 'tw-danger-seg'); segs.push(sg); meter.append(sg); }
   dangerPill.append(heart, el('span', undefined, 'Far from home'), meter);
-  alerts.append(dangerPill, burnPill);
+  // Milestone ribbon: gold, under the alert pills, with a small pool of confetti specks.
+  const ribbon = el('div', 'tw-ribbon'); // announced by the alerts' status role
+  const ribbonText = el('span', 'tw-ribbon-text');
+  ribbon.append(icon('star'), ribbonText, icon('star'));
+  const specks: HTMLElement[] = [];
+  for (let i = 0; i < RIBBON_SPECKS; i++) {
+    const sp = el('span', 'tw-speck');
+    sp.style.background = SPECK_COLORS[i % SPECK_COLORS.length];
+    specks.push(sp);
+    ribbon.append(sp);
+  }
+  ribbon.hidden = true;
+  alerts.append(dangerPill, burnPill, ribbon);
+  let ribbonTimer: ReturnType<typeof setTimeout> | null = null;
+  let ribbonDelay: ReturnType<typeof setTimeout> | null = null;
+  const hideRibbon = () => {
+    if (ribbonTimer !== null) clearTimeout(ribbonTimer);
+    if (ribbonDelay !== null) clearTimeout(ribbonDelay);
+    ribbonTimer = ribbonDelay = null;
+    ribbon.hidden = true;
+  };
+  const playRibbon = (tier: number) => {
+    ribbonDelay = null;
+    setText(ribbonText, milestoneRibbonText(tier));
+    ribbon.hidden = false;
+    const still = reduceMotion() || typeof ribbon.animate !== 'function';
+    if (!still) {
+      ribbon.animate(RIBBON_KEYS, { duration: RIBBON_MS, easing: 'ease-out' });
+      specks.forEach((sp, i) => {
+        // An even fan upward and out, jittered, then falling back a little.
+        const a = Math.PI * (1.05 + 0.9 * (i + Math.random() * 0.6) / RIBBON_SPECKS);
+        const d = 46 + Math.random() * 40;
+        const x = Math.cos(a) * d, y = Math.sin(a) * d * 0.7;
+        sp.animate([
+          { transform: 'translate(-50%, -50%) scale(0.4) rotate(0deg)', opacity: 1 },
+          { transform: `translate(calc(-50% + ${x.toFixed(1)}px), calc(-50% + ${y.toFixed(1)}px)) scale(1) rotate(200deg)`, opacity: 1, offset: 0.55 },
+          { transform: `translate(calc(-50% + ${(x * 1.15).toFixed(1)}px), calc(-50% + ${(y + 26).toFixed(1)}px)) scale(0.8) rotate(320deg)`, opacity: 0 },
+        ], { duration: SPECK_MS, delay: 120 + i * 12, easing: 'cubic-bezier(0.2, 0.8, 0.4, 1)', fill: 'both' });
+      });
+    }
+    ribbon.classList.toggle('tw-still', still);
+    ribbonTimer = setTimeout(hideRibbon, RIBBON_MS);
+  };
+  const bumpCard = () => {
+    if (reduceMotion() || typeof area.animate !== 'function') return;
+    area.animate(BUMP_KEYS, { duration: BUMP_MS, easing: 'ease-out' });
+    pctUp.animate(UP_KEYS, { duration: UP_MS, easing: 'ease-out' });
+  };
   /** Last written HUD alert state, so the DOM is touched only on change. */
   let shownBurn = false, shownDanger = false, shownSegs = -1, shownBeat = -1;
   const setAlerts = (burning: boolean, danger: number) => {
@@ -1049,6 +1131,7 @@ export function createScreens(root: HTMLElement): Screens {
       setText(timeNum, '0:00');
       shieldToast.hidden = burnTag.hidden = true;
       setAlerts(false, 0);
+      hideRibbon();
       area.classList.remove('tw-burning');
       steerHint.classList.remove('tw-gone');
       hudColor = -1;
@@ -1071,6 +1154,12 @@ export function createScreens(root: HTMLElement): Screens {
     tickHud(now) {
       setText(pctNum, Math.max(0, pctTween.value(now)).toFixed(2));
       return pctTween.active(now);
+    },
+    bumpPct: bumpCard,
+    showMilestone(tier, delayS = 0) {
+      hideRibbon();
+      if (delayS > 0) ribbonDelay = setTimeout(() => playRibbon(tier), delayS * 1000);
+      else playRibbon(tier);
     },
     updateHud(world, now, danger = 0) {
       const human = world.players[world.humanId];

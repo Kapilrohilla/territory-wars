@@ -1,5 +1,7 @@
 import type { GameEvent, World } from '../sim/types';
 import { pct } from '../sim/world';
+import { landArea } from '../sim/territory';
+import { waveSeconds } from './waves';
 import { MAX_STREAK, type SoundName, type SoundOpts } from './sound';
 
 /** One sound to play, with its options (see playSound). */
@@ -61,6 +63,8 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
   }
 
   let capturePct = 0;
+  /** The largest region the human took this step: the capture sweep lasts as long as its wave. */
+  let captureArea = 0;
   let stole = false;
   let kills = 0;
   for (const e of events) {
@@ -68,6 +72,7 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
       case 'capture':
         if (e.playerId === human && e.gainedPct > 0) {
           capturePct += e.gainedPct;
+          captureArea = Math.max(captureArea, landArea(e.region));
           if (e.stolen.length > 0) stole = true;
         }
         break;
@@ -75,6 +80,7 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
         // Taking a victim's land sounds like stealing it.
         if (e.playerId === human && e.gainedPct > 0) {
           capturePct += e.gainedPct;
+          captureArea = Math.max(captureArea, landArea(e.region));
           stole = true;
         }
         break;
@@ -114,7 +120,7 @@ export function soundsFor(events: GameEvent[], world: World, state: SfxState): C
   if (capturePct > 0) {
     const at = stole ? CAPTURE_AFTER_STEAL_S : 0;
     if (stole) add({ name: 'steal' });
-    add({ name: 'capture', pct: capturePct, delay: at });
+    add({ name: 'capture', pct: capturePct, delay: at, durationS: waveSeconds(captureArea) });
     const esc = out.get('escape');
     if (esc) {
       // Re-insert so the relief chime follows the chord.
