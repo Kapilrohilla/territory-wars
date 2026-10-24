@@ -12,6 +12,7 @@ import { createSkinsScreen, paintSkin, type SkinsView } from './skinsScreen';
 import type { Skin } from '../game/skins';
 import { DANGER_SHOW } from '../game/danger';
 import { MILESTONES } from '../game/sfxEvents';
+import { steerTipSeen } from '../game/overlay';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -802,6 +803,8 @@ export function createScreens(root: HTMLElement): Screens {
   shieldToast.setAttribute('role', 'status');
 
   const steerHint = el('div', 'tw-steer-hint', 'Drag anywhere to steer');
+  /** This round shows the first-time steer bubble (overlay.ts) instead of the plain hint. */
+  let steerBubbleRound = false;
   const minimapWrap = el('div', 'tw-minimap-wrap');
   const minimap = el('canvas', 'tw-minimap');
   minimap.setAttribute('aria-label', 'Map of the whole arena');
@@ -1183,7 +1186,9 @@ export function createScreens(root: HTMLElement): Screens {
       hideRibbon();
       hideKo();
       area.classList.remove('tw-burning');
-      steerHint.classList.remove('tw-gone');
+      // Read before the session starts: the overlay saves the flag on the round's first frame.
+      steerBubbleRound = !steerTipSeen();
+      steerHint.classList.toggle('tw-gone', steerBubbleRound);
       hudColor = -1;
       minimapWrap.hidden = !minimapOn;
       syncAll();
@@ -1229,7 +1234,7 @@ export function createScreens(root: HTMLElement): Screens {
       setAlerts(a.burning, danger);
       area.classList.toggle('tw-burning', a.burning);
       shieldToast.hidden = !a.shielded;
-      steerHint.classList.toggle('tw-gone', world.time > HINT_SECONDS);
+      steerHint.classList.toggle('tw-gone', steerBubbleRound || world.time > HINT_SECONDS);
       const rows = buildLeaderboard(boardEntries(world));
       rowEls.forEach((r, i) => {
         const row = rows[i];

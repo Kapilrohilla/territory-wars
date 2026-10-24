@@ -4,6 +4,7 @@ import type { Player, World } from '../sim/types';
 import type { Camera } from './camera';
 import { SPAWN_HEIGHT, type Effects, type HeadPose } from './effects';
 import { drawFace, drawFaceBack } from './faces';
+import { SQUASH, SWOOSH_K, createLeanState, stepLean, type LeanState } from './lean';
 import type { Face } from './skins';
 import { PALETTE } from './palette';
 import type { Threat } from './threats';
@@ -27,10 +28,17 @@ export type Fx = {
    * leaves it empty while danger warnings are off. Close ones glow on the trail.
    */
   threats?: readonly Threat[];
+  /**
+   * Real seconds since the previous painted frame, set by the session around each frame's
+   * render (0 for repaints such as a resize, which then leave the lean poses alone).
+   */
+  frameDt?: number;
+  /** Each head's smoothed lean/squash into turns (lean.ts). */
+  lean: Map<number, LeanState>;
 };
 
 export function createFx(): Fx {
-  return { prevHeading: new Map() };
+  return { prevHeading: new Map(), lean: new Map() };
 }
 
 /** Call right before each sim step. */
@@ -546,27 +554,59 @@ function drawHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: 
 }
 
 /**
- * Draws a head in its spawn pose: lifted above its spot (with a ground shadow that darkens
- * as it lands), scaled about its base so a squash stays on the ground.
+ * Draws a head in its spawn pose (pose, may be null) leaning `lean` rad into a turn and
+ * squashed by `squash` (0..1). The spawn pose lifts the head above its spot (with a ground
+ * shadow that darkens as it lands); every scale and the lean pivot about the head's base so
+ * a squash stays on the ground. Spawn and turn scales multiply.
  */
 function drawPosedHead(ctx: CanvasRenderingContext2D, p: Player, head: Vec, heading: number, face: Face | undefined,
-  pose: HeadPose): void {
-  const land = 1 - pose.lift / SPAWN_HEIGHT;
+  pose: HeadPose | null, lean: number, squash: number): void {
   const prevAlpha = ctx.globalAlpha;
-  ctx.globalAlpha = prevAlpha * 0.25 * land;
-  ctx.fillStyle = '#28283a';
-  ctx.beginPath();
-  ctx.ellipse(head.x, head.y + HEAD_SIDE, (HEAD_SIZE / 2) * (0.5 + 0.5 * land), (HEAD_SIZE / 4) * (0.5 + 0.5 * land),
-    0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = prevAlpha * pose.alpha;
+  let lift = 0, sx = 1 + SQUASH * squash, sy = 1 - SQUASH * squash;
+  if (pose) {
+    const land = 1 - pose.lift / SPAWN_HEIGHT;
+    ctx.globalAlpha = prevAlpha * 0.25 * land;
+    ctx.fillStyle = '#28283a';
+    ctx.beginPath();
+    ctx.ellipse(head.x, head.y + HEAD_SIDE, (HEAD_SIZE / 2) * (0.5 + 0.5 * land), (HEAD_SIZE / 4) * (0.5 + 0.5 * land),
+      0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = prevAlpha * pose.alpha;
+    lift = pose.lift;
+    sx *= pose.sx;
+    sy *= pose.sy;
+  }
   const baseY = head.y + HEAD_SIZE / 2 + HEAD_SIDE;
   ctx.save();
-  ctx.translate(head.x, baseY - pose.lift);
-  ctx.scale(pose.sx, pose.sy);
+  ctx.translate(head.x, baseY - lift);
+  if (lean !== 0) ctx.rotate(lean);
+  ctx.scale(sx, sy);
   ctx.translate(-head.x, -baseY);
   drawHead(ctx, p, head, heading, face);
   ctx.restore();
+  ctx.globalAlpha = prevAlpha;
+}
+
+/** Below this the lean/squash is invisible: the plain (cheaper) head path is used. */
+const POSE_EPS = 1e-3;
+
+/** Two small white arcs behind a head in a sharp turn; `strength` 0..1 fades them in. */
+function drawSwooshes(ctx: CanvasRenderingContext2D, head: Vec, heading: number, lean: number, strength: number): void {
+  const back = heading + Math.PI;
+  // The arcs bend toward the inside of the turn, following the path just travelled.
+  const skew = lean > 0 ? -0.35 : 0.35;
+  const prevAlpha = ctx.globalAlpha;
+  ctx.globalAlpha = prevAlpha * strength;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 0.12;
+  const cy = head.y + HEAD_SIDE / 2;
+  for (let i = 0; i < 2; i++) {
+    const r = 0.98 + i * 0.32, span = 0.42 - i * 0.1, mid = back + skew * (1 + i * 0.4);
+    ctx.beginPath();
+    ctx.arc(head.x, cy, r, mid - span, mid + span);
+    ctx.stroke();
+  }
   ctx.globalAlpha = prevAlpha;
 }
 
@@ -645,6 +685,7 @@ export function render(
 ): void {
   effects?.observe(world);
   const reduced = prefersReducedMotion();
+  const frameDt = fx.frameDt ?? 0;
   ctx.fillStyle = PALETTE.bg;
   ctx.fillRect(0, 0, cam.viewW, cam.viewH);
 
@@ -679,7 +720,23 @@ export function render(
     ctx.globalAlpha = headAlpha(world, p, reduced);
     const pose = reduced ? null : effects?.headPose(p.id) ?? null;
     const head = heads.get(p.id)!, heading = interpHeading(fx, p, alpha), face = fx.faceOf?.(p);
-    if (pose) drawPosedHead(ctx, p, head, heading, face, pose);
+    let ls = fx.lean.get(p.id);
+    if (!ls) {
+      ls = createLeanState();
+      fx.lean.set(p.id, ls);
+    }
+    let lean = 0, squash = 0;
+    if (reduced) {
+      // No lean or squash; keep tracking the heading so turning it back on doesn't spike.
+      ls.heading = heading;
+      ls.lean = ls.k = 0;
+    } else {
+      stepLean(ls, heading, frameDt);
+      lean = ls.lean;
+      squash = ls.k;
+      if (p === human && squash > SWOOSH_K) drawSwooshes(ctx, head, heading, lean, (squash - SWOOSH_K) / (1 - SWOOSH_K));
+    }
+    if (pose || Math.abs(lean) > POSE_EPS || squash > POSE_EPS) drawPosedHead(ctx, p, head, heading, face, pose, lean, squash);
     else drawHead(ctx, p, head, heading, face);
   }
   ctx.globalAlpha = 1;

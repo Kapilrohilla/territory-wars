@@ -138,9 +138,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const threats: Threat[] = [];
   fx.threats = threats;
   const threatAlert = createThreatAlert();
-  const overlay = createOverlay(danger, threats, (p) => fx.faceOf!(p));
-  const tension = createTension();
   const input = createInput(canvas);
+  const overlay = createOverlay(danger, threats, (p) => fx.faceOf!(p), input);
+  const tension = createTension();
   let inputDisposed = false;
   const disposeInput = () => {
     if (inputDisposed) return;
@@ -277,7 +277,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       const human = world.players[world.humanId];
       camera.update(interpPos(human, a), pct(world, world.humanId), dt * slow);
       overlay.update(world, camera, dt, a);
+      // Real frame time for the head lean; repaints outside the loop (resize) pass none.
+      fx.frameDt = dt;
       paint(a);
+      fx.frameDt = 0;
     }
     frozenPainted = idleFrozen; // one paint after the effects settle, then none
 

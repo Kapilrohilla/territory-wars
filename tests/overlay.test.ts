@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  THREAT_TIP_S, createOverlay, createTipState, placeArrow, placeTip, stepTip, tipSeen, type Rect,
+  KNOB_MAX_PX, STEER_TIP_KEY, STEER_TIP_S, THREAT_TIP_S, createOverlay, createSteerTipState, createTipState,
+  joyFade, knobOffset, placeArrow, placeTip, steerTipSeen, steerTipText, stepSteerTip, stepTip, tipSeen, type Rect,
 } from '../src/game/overlay';
 import { createDangerState, dangerWarningsEnabled } from '../src/game/danger';
 
@@ -134,5 +135,75 @@ describe('tooltip lifecycle', () => {
     const saved = { n: 0 };
     expect(stepTip(s, 1, () => true, 0.1, seen(saved))).toBe(false);
     expect(saved.n).toBe(0);
+  });
+});
+
+describe('joystick knob', () => {
+  it('follows the drag inside the ring', () => {
+    const o = knobOffset({ x: 100, y: 100 }, { x: 110, y: 90 }, { x: 0, y: 0 });
+    expect(o).toEqual({ x: 10, y: -10 });
+  });
+  it('is clamped to KNOB_MAX_PX (38 px) along the drag', () => {
+    expect(KNOB_MAX_PX).toBe(38);
+    const o = knobOffset({ x: 0, y: 0 }, { x: 60, y: 80 }, { x: 0, y: 0 });
+    expect(Math.hypot(o.x, o.y)).toBeCloseTo(38);
+    expect(o.x / o.y).toBeCloseTo(60 / 80);
+  });
+  it('reuses out', () => {
+    const out = { x: 0, y: 0 };
+    expect(knobOffset({ x: 0, y: 0 }, { x: 1, y: 1 }, out)).toBe(out);
+  });
+});
+
+describe('joyFade', () => {
+  it('fades in over 120 ms and out over 180 ms', () => {
+    expect(joyFade(0, true, 0.06, false)).toBeCloseTo(0.5);
+    expect(joyFade(0, true, 0.12, false)).toBe(1);
+    expect(joyFade(1, false, 0.09, false)).toBeCloseTo(0.5);
+    expect(joyFade(1, false, 0.18, false)).toBe(0);
+    expect(joyFade(1, true, 1, false)).toBe(1);
+    expect(joyFade(0, false, 1, false)).toBe(0);
+  });
+  it('snaps under reduced motion', () => {
+    expect(joyFade(0, true, 0.001, true)).toBe(1);
+    expect(joyFade(1, false, 0.001, true)).toBe(0);
+  });
+});
+
+describe('first-time steer tip', () => {
+  it('text depends on touch vs desktop', () => {
+    expect(steerTipText(true)).toBe('Drag anywhere to steer');
+    expect(steerTipText(false)).toBe('Use arrow keys or drag to steer');
+  });
+  it('never shows once seen', () => {
+    const s = createSteerTipState(true);
+    let calls = 0;
+    expect(stepSteerTip(s, false, 0.016, () => calls++)).toBe(0);
+    expect(calls).toBe(0);
+  });
+  it('shows for STEER_TIP_S (3 s), saving the seen flag once', () => {
+    expect(STEER_TIP_S).toBe(3);
+    const s = createSteerTipState(false);
+    let calls = 0;
+    let a = stepSteerTip(s, false, 0.016, () => calls++);
+    expect(a).toBeGreaterThan(0);
+    let t = 0.016;
+    while (t < 2.5) { a = stepSteerTip(s, false, 0.1, () => calls++); t += 0.1; }
+    expect(a).toBe(1);
+    for (let i = 0; i < 10; i++) a = stepSteerTip(s, false, 0.1, () => calls++);
+    expect(a).toBe(0);
+    expect(calls).toBe(1);
+  });
+  it('fades away soon after the first steer', () => {
+    const s = createSteerTipState(false);
+    stepSteerTip(s, false, 0.5, () => {});
+    let a = stepSteerTip(s, true, 0.016, () => {});
+    expect(a).toBeLessThan(1);
+    for (let i = 0; i < 5; i++) a = stepSteerTip(s, false, 0.1, () => {});
+    expect(a).toBe(0);
+  });
+  it('the seen flag survives blocked storage', () => {
+    expect(steerTipSeen({ getItem: () => { throw new Error('blocked'); }, setItem() {} })).toBe(false);
+    expect(steerTipSeen({ getItem: (k) => (k === STEER_TIP_KEY ? '1' : null), setItem() {} })).toBe(true);
   });
 });

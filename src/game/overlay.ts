@@ -1,13 +1,14 @@
 /**
  * Screen-space layer drawn over the world after render() each frame: the danger and
  * burning-trail vignettes, the gold home arrow with its distance chip, and the edge arrows
- * pointing at off-screen threats. Later layers (the touch joystick) hang off the same
- * update/draw pair.
+ * pointing at off-screen threats, the floating joystick under a drag and the first-time
+ * steering tip.
  */
 import type { Player, World } from '../sim/types';
 import type { Camera } from './camera';
 import type { DangerState } from './danger';
 import { drawFace } from './faces';
+import type { PointerState } from './input';
 import { playerColors, prefersReducedMotion } from './render';
 import type { Face } from './skins';
 import { burnVignetteAlpha } from './tension';
@@ -128,6 +129,90 @@ export function stepTip(s: TipState, firstId: number, arrowShown: (id: number) =
   return draw;
 }
 
+/** Joystick ring (120 px across) at the drag anchor, and the knob (44 px) inside it. */
+export const RING_R = 60;
+export const KNOB_R = 22;
+/** The knob centre stays within this distance (px) of the anchor. */
+export const KNOB_MAX_PX = 38;
+const JOY_FADE_IN_S = 0.12;
+const JOY_FADE_OUT_S = 0.18;
+/** Knob fallback when the human's skin colour is unknown: periwinkle. */
+const PERIWINKLE = '#8DAAEC';
+const PERIWINKLE_LIP = '#6F8CD0';
+
+/** The knob's offset from the anchor (written to out): toward current, at most KNOB_MAX_PX. */
+export function knobOffset(anchor: { x: number; y: number }, current: { x: number; y: number },
+  out: { x: number; y: number }): { x: number; y: number } {
+  const dx = current.x - anchor.x, dy = current.y - anchor.y;
+  const d = Math.hypot(dx, dy);
+  const k = d > KNOB_MAX_PX ? KNOB_MAX_PX / d : 1;
+  out.x = dx * k;
+  out.y = dy * k;
+  return out;
+}
+
+/** The joystick's opacity one frame on: in over 120 ms while dragging, out over 180 ms. */
+export function joyFade(v: number, on: boolean, dt: number, reduced: boolean): number {
+  if (reduced) return on ? 1 : 0;
+  const next = on ? v + dt / JOY_FADE_IN_S : v - dt / JOY_FADE_OUT_S;
+  return next < 0 ? 0 : next > 1 ? 1 : next;
+}
+
+/** First-time steering tip: shown on the first ever round for 3 s or until the first steer. */
+export const STEER_TIP_KEY = 'territory-wars.steerTipSeen';
+export const STEER_TIP_S = 3;
+const STEER_TIP_FADE_IN_S = 0.2;
+const STEER_TIP_FADE_OUT_S = 0.25;
+const STEER_TIP_TOUCH = 'Drag anywhere to steer';
+const STEER_TIP_DESKTOP = 'Use arrow keys or drag to steer';
+
+export function steerTipText(touch: boolean): string {
+  return touch ? STEER_TIP_TOUCH : STEER_TIP_DESKTOP;
+}
+
+/** Whether the steer tip was already shown (storage is touched only inside the try). */
+export function steerTipSeen(store?: FlagStore): boolean {
+  try {
+    return (store ?? globalThis.localStorage)?.getItem(STEER_TIP_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function markSteerTipSeen(): void {
+  try { globalThis.localStorage?.setItem(STEER_TIP_KEY, '1'); } catch { /* storage unavailable */ }
+}
+
+export type SteerTipState = { started: boolean; left: number; shown: boolean };
+
+export function createSteerTipState(seen: boolean): SteerTipState {
+  return { started: seen, left: 0, shown: seen };
+}
+
+/**
+ * Advances the steer tip; returns its opacity this frame (0 = not drawn). It starts on the
+ * first call, saves the seen flag (`persist`) the first time it is drawn, and once the
+ * player steers it fades out within STEER_TIP_FADE_OUT_S.
+ */
+export function stepSteerTip(s: SteerTipState, steered: boolean, dt: number, persist: () => void): number {
+  if (!s.started) {
+    s.started = true;
+    s.left = STEER_TIP_S;
+  }
+  if (s.left <= 0) return 0;
+  if (steered) s.left = Math.min(s.left, STEER_TIP_FADE_OUT_S);
+  if (!s.shown) {
+    s.shown = true;
+    persist();
+  }
+  s.left = Math.max(0, s.left - dt);
+  if (s.left === 0) return 0;
+  return Math.min(1, (STEER_TIP_S - s.left) / STEER_TIP_FADE_IN_S, s.left / STEER_TIP_FADE_OUT_S);
+}
+
+/** What the overlay reads from the input each frame for the joystick and the steer tip. */
+export type SteerSource = { pointer(): PointerState | null; targetHeading(): number | null };
+
 /** A screen rectangle in CSS px (e.g. a HUD card the indicators must not hide under). */
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -242,6 +327,24 @@ function getArrowPath(): Path2D {
   return p;
 }
 
+/** Steer tip: its bottom sits this far (px) above the bottom edge margin. */
+const STEER_TIP_REACH = 110;
+
+/** A TIP_H pill with a small tail under its middle (mx), pointing down. */
+function bubble(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, mx: number, tail: number): void {
+  const h = TIP_H, r = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arc(x + w - r, y + r, r, -Math.PI / 2, Math.PI / 2);
+  ctx.lineTo(mx + tail, y + h);
+  ctx.lineTo(mx, y + h + tail);
+  ctx.lineTo(mx - tail, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.arc(x + r, y + r, r, Math.PI / 2, (3 * Math.PI) / 2);
+  ctx.closePath();
+}
+
 function pill(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
   const r = h / 2;
   ctx.beginPath();
@@ -257,8 +360,20 @@ function pill(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h:
  * `threats` is the session's per-frame list (closest first, empty with danger warnings off);
  * `faceOf` gives a rival's face for its arrow chip.
  */
-export function createOverlay(danger: DangerState, threats: readonly Threat[] = [], faceOf?: (p: Player) => Face): Overlay {
+export function createOverlay(danger: DangerState, threats: readonly Threat[] = [], faceOf?: (p: Player) => Face,
+  steer?: SteerSource): Overlay {
   let time = 0;
+  // Joystick: last drag seen (kept for the fade-out), its opacity and the knob colours.
+  const joyAnchor = { x: 0, y: 0 }, joyKnob = { x: 0, y: 0 };
+  let joyAlpha = 0;
+  let joyArrow = false;
+  let knobBase = PERIWINKLE, knobLip = PERIWINKLE_LIP;
+  // Steer tip: touch wording on coarse pointers, switched to whatever the first drag was.
+  const steerTip = createSteerTipState(steer ? steerTipSeen() : true);
+  let steerTipAlpha = 0;
+  let touchUi = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  let steerText = steerTipText(touchUi);
+  let steerTextW = 0;
   const arrows: Arrow[] = Array.from({ length: MAX_THREATS }, () =>
     ({ show: false, player: null, x: 0, y: 0, angle: 0, label: '', closest: false }));
   let anyArrow = false;
@@ -300,6 +415,7 @@ export function createOverlay(danger: DangerState, threats: readonly Threat[] = 
       }
       updateArrows(world, cam, alpha);
       tipDraw = stepTip(tip, firstArrowId, arrowShown, dt, persistTip);
+      if (steer) updateSteer(world, dt);
     },
 
     setAvoid(rects) {
@@ -327,8 +443,112 @@ export function createOverlay(danger: DangerState, threats: readonly Threat[] = 
       }
       if (showHome) drawHome(ctx, cam);
       if (anyArrow) drawArrows(ctx, cam);
+      if (joyAlpha > 0) drawJoystick(ctx);
+      if (steerTipAlpha > 0) drawSteerTip(ctx, cam);
     },
   };
+
+  function updateSteer(world: World, dt: number): void {
+    const p = steer!.pointer();
+    if (p) {
+      joyAnchor.x = p.anchor.x;
+      joyAnchor.y = p.anchor.y;
+      knobOffset(p.anchor, p.current, joyKnob);
+      joyArrow = p.active;
+      if (p.touch !== touchUi) {
+        touchUi = p.touch;
+        steerText = steerTipText(touchUi);
+        steerTextW = 0;
+      }
+    }
+    joyAlpha = joyFade(joyAlpha, p !== null, dt, reduced);
+    // The knob wears the human's skin colour (periwinkle until the world says otherwise).
+    const human = world.players[world.humanId];
+    if (human) {
+      const c = playerColors(human.colorIndex);
+      knobBase = c.base;
+      knobLip = c.lip;
+    }
+    const steered = steer!.targetHeading() !== null;
+    steerTipAlpha = stepSteerTip(steerTip, steered, dt, markSteerTipSeen);
+  }
+
+  /** Translucent ring at the anchor, the skin-coloured knob toward the drag, a faint arrow. */
+  function drawJoystick(ctx: CanvasRenderingContext2D): void {
+    const ax = joyAnchor.x, ay = joyAnchor.y;
+    ctx.save();
+    ctx.globalAlpha = joyAlpha;
+    // Ring: a faint lip shadow below, a soft white disc and rim on top.
+    ctx.beginPath();
+    ctx.arc(ax, ay + LIP_PX, RING_R, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(52, 50, 63, 0.14)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(ax, ay, RING_R, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    // Knob with its lip.
+    const kx = ax + joyKnob.x, ky = ay + joyKnob.y;
+    ctx.beginPath();
+    ctx.arc(kx, ky + LIP_PX, KNOB_R, 0, Math.PI * 2);
+    ctx.fillStyle = knobLip;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(kx, ky, KNOB_R, 0, Math.PI * 2);
+    ctx.fillStyle = knobBase;
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Heading chevron on the knob, once the drag steers.
+    if (joyArrow && (joyKnob.x !== 0 || joyKnob.y !== 0)) {
+      ctx.translate(kx, ky);
+      ctx.rotate(Math.atan2(joyKnob.y, joyKnob.x));
+      ctx.beginPath();
+      ctx.moveTo(-2, -8);
+      ctx.lineTo(8, 0);
+      ctx.lineTo(-2, 8);
+      ctx.strokeStyle = 'rgba(52, 50, 63, 0.55)';
+      ctx.lineWidth = 3;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /** Speech bubble near the bottom centre, kept clear of the HUD cards. */
+  function drawSteerTip(ctx: CanvasRenderingContext2D, cam: Camera): void {
+    ctx.font = TIP_FONT;
+    if (steerTextW === 0) steerTextW = ctx.measureText(steerText).width;
+    const tw = steerTextW + TIP_PAD * 2;
+    const tail = 7;
+    // Up from the bottom centre (an "arrow" at the bottom edge pointing down).
+    placeTip(cam.viewW / 2, cam.viewH - EDGE_MARGIN, Math.PI / 2, tw, TIP_H + LIP_PX + tail, cam.viewW, cam.viewH,
+      EDGE_MARGIN, STEER_TIP_REACH, avoid, spot);
+    const x = spot.x, y = spot.y, mx = x + tw / 2;
+    ctx.save();
+    ctx.globalAlpha = steerTipAlpha;
+    ctx.lineJoin = 'round';
+    bubble(ctx, x, y + LIP_PX, tw, mx, tail);
+    ctx.fillStyle = CHIP_LIP;
+    ctx.fill();
+    bubble(ctx, x, y, tw, mx, tail);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = INK;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(steerText, mx, y + TIP_H / 2 + 1);
+    ctx.restore();
+  }
 
   /** Places an edge arrow for every threat whose head is off-screen. */
   function updateArrows(world: World, cam: Camera, alpha: number): void {
