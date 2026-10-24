@@ -13,6 +13,9 @@ import { playSound } from './sound';
 import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
 import { createMoodState, moodEvents, moodOf } from './moods';
 import { botSkin, faceFor, skinById } from './skins';
+import { createDangerState, sampleDanger } from './danger';
+import { createOverlay } from './overlay';
+import { createTension } from './tension';
 
 export type SessionOpts = {
   seed?: number;
@@ -106,6 +109,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const skins = world.players.map((p) => (p.isHuman ? humanSkin : botSkin(p.id, p.colorIndex, seed)));
   fx.faceOf = (p) => faceFor(skins[p.id] ?? humanSkin, moodOf(p, world, moods));
   const effects = createEffects();
+  // Danger is sampled once per frame and shared by the overlay and the tension sounds.
+  const danger = createDangerState();
+  const overlay = createOverlay(danger);
+  const tension = createTension();
   const input = createInput(canvas);
   let inputDisposed = false;
   const disposeInput = () => {
@@ -121,6 +128,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const paint = (alpha: number) => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     render(ctx, world, camera, alpha, fx, effects);
+    overlay.draw(ctx, camera);
     if (miniCtx && miniSize > 0) drawMinimap(miniCtx, world, miniSize, dpr, alpha, camera);
   };
 
@@ -158,7 +166,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       moodEvents(world.events, world, moods);
     }
     // Every step, even a silent one: the revive shield's end is a state edge, not an event.
-    for (const cue of soundsFor(world.events, world, sfx)) playSound(cue.name, cue);
+    for (const cue of soundsFor(world.events, world, sfx)) {
+      playSound(cue.name, cue);
+      tension.heard(cue.name);
+    }
   };
   /** The human's share on the last step it was alive (see finalSharePct). */
   let alivePct = 0;
@@ -190,6 +201,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     const a = world.over || world.awaitingRevive ? 1 : alpha;
     lastAlpha = a;
     effects.update(dt);
+    sampleDanger(world, danger);
+    // Real time, and only while the loop runs: silent when paused (no frames), and the
+    // controller itself goes quiet behind the revive offer and once the round is over.
+    tension.update(world, dt, danger);
     // Frozen behind the revive modal with no effect left to play: the frame is static under
     // the blurred overlay, so skip repainting it (resize still repaints). Painting resumes
     // after revive()/giveUp(), which clear awaitingRevive.
@@ -197,6 +212,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     if (!idleFrozen || !frozenPainted) {
       const human = world.players[world.humanId];
       camera.update(interpPos(human, a), pct(world, world.humanId), dt);
+      overlay.update(world, camera, dt, a);
       paint(a);
     }
     frozenPainted = idleFrozen; // one paint after the effects settle, then none
@@ -263,6 +279,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       if (disposed) return;
       disposed = true;
       stop();
+      tension.dispose();
       window.removeEventListener('resize', resize);
       disposeInput();
     },

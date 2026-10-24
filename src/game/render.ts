@@ -197,14 +197,6 @@ export function shieldAlpha(remaining: number): number {
   return u * u * (3 - 2 * u);
 }
 
-const VIGNETTE_HZ = 1.5;
-
-/** Burning-trail screen-edge vignette opacity: a slow pulse, or a lower steady glow under reduced motion. */
-export function vignetteAlpha(time: number, reduced: boolean): number {
-  if (reduced) return 0.3;
-  return 0.35 + 0.3 * (0.5 + 0.5 * Math.sin(time * VIGNETTE_HZ * Math.PI * 2));
-}
-
 /** Path length over which an ash dot fades after a burn front passes it. */
 export const ASH_FADE_LEN = 6;
 
@@ -218,33 +210,8 @@ export function ashAlpha(x: number, s0: number, back: number, front: number): nu
   return clamp01(1 - behind / ASH_FADE_LEN);
 }
 
-/**
- * Nearest point to p on the boundary of land (every ring), written to out. Returns the
- * distance, or Infinity (out untouched) for empty land. For a p outside the land, that
- * is the nearest point of the land itself.
- */
-export function nearestPointOnLand(land: MultiPoly, p: Vec, out: { x: number; y: number }): number {
-  let best = Infinity, bx = 0, by = 0;
-  for (const poly of land) {
-    for (const ring of poly) {
-      const n = ring.length;
-      if (n === 0) continue;
-      for (let i = 0, j = n - 1; i < n; j = i++) {
-        const a = ring[j], b = ring[i];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const len2 = dx * dx + dy * dy;
-        const k = len2 > 0 ? clamp01(((p.x - a.x) * dx + (p.y - a.y) * dy) / len2) : 0;
-        const x = a.x + dx * k, y = a.y + dy * k;
-        const d2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-        if (d2 < best) { best = d2; bx = x; by = y; }
-      }
-    }
-  }
-  if (best === Infinity) return Infinity;
-  out.x = bx;
-  out.y = by;
-  return Math.sqrt(best);
-}
+/** Nearest boundary point of a land; lives in danger.ts (kept exported here for callers). */
+export { nearestPointOnLand } from './danger';
 
 // Dying land is drawn (shrinking) by the effects layer, not here.
 function drawLands(ctx: CanvasRenderingContext2D, world: World, effects?: Effects): void {
@@ -563,62 +530,6 @@ function drawShield(ctx: CanvasRenderingContext2D, head: Vec, remaining: number,
   ctx.globalAlpha = prevAlpha;
 }
 
-const HOME_ARROW_COLOR = '#B4232F';
-const HOME_ARROW_GAP = 1.1;
-const HOME_ARROW_MAX = 7;
-const HOME_ARROW_DOT = 0.7;
-const HOME_ARROW_HEAD = 0.55;
-const homeTarget = { x: 0, y: 0 };
-
-/** Dotted arrow from the head towards the nearest point of the player's own land. */
-function drawHomeArrow(ctx: CanvasRenderingContext2D, land: MultiPoly, head: Vec): void {
-  const d = nearestPointOnLand(land, head, homeTarget);
-  if (!(d > HOME_ARROW_GAP + HOME_ARROW_HEAD)) return; // no land, or already at the edge
-  const ux = (homeTarget.x - head.x) / d, uy = (homeTarget.y - head.y) / d;
-  const end = Math.min(d, HOME_ARROW_GAP + HOME_ARROW_MAX);
-  ctx.fillStyle = HOME_ARROW_COLOR;
-  const prevAlpha = ctx.globalAlpha;
-  ctx.globalAlpha = prevAlpha * 0.85;
-  ctx.beginPath();
-  for (let t = HOME_ARROW_GAP; t < end - HOME_ARROW_HEAD; t += HOME_ARROW_DOT) {
-    const x = head.x + ux * t, y = head.y + uy * t;
-    ctx.moveTo(x + 0.13, y);
-    ctx.arc(x, y, 0.13, 0, Math.PI * 2);
-  }
-  ctx.fill();
-  // Chevron head at the end.
-  const tx = head.x + ux * end, ty = head.y + uy * end;
-  const bx = tx - ux * HOME_ARROW_HEAD, by = ty - uy * HOME_ARROW_HEAD;
-  const w = HOME_ARROW_HEAD * 0.7;
-  ctx.beginPath();
-  ctx.moveTo(tx, ty);
-  ctx.lineTo(bx - uy * w, by + ux * w);
-  ctx.lineTo(bx + uy * w, by - ux * w);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = prevAlpha;
-}
-
-let vignette: CanvasGradient | null = null;
-
-/** Soft orange-red edge glow (screen space) while the human's own trail burns. */
-function drawBurnVignette(ctx: CanvasRenderingContext2D, w: number, h: number, time: number, reduced: boolean): void {
-  // Built once in a unit square and stretched to the screen, so it hugs every edge (an ellipse).
-  if (!vignette) {
-    vignette = ctx.createRadialGradient(0, 0, 0.75, 0, 0, Math.SQRT2);
-    vignette.addColorStop(0, 'rgba(255, 122, 89, 0)');
-    vignette.addColorStop(0.45, 'rgba(255, 110, 80, 0.22)');
-    vignette.addColorStop(1, 'rgba(230, 70, 55, 0.5)');
-  }
-  ctx.save();
-  ctx.translate(w / 2, h / 2);
-  ctx.scale(w / 2, h / 2);
-  ctx.globalAlpha = vignetteAlpha(time, reduced);
-  ctx.fillStyle = vignette;
-  ctx.fillRect(-1, -1, 2, 2);
-  ctx.restore();
-}
-
 /**
  * Draws the world. Expects ctx's transform to map CSS pixels (DPR applied by
  * the caller) and `cam` to be updated for this frame.
@@ -654,7 +565,6 @@ export function render(
   const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
   const human = world.players[world.humanId];
   const humanHead = human.alive ? heads.get(human.id) : undefined;
-  if (humanHead && human.burn) drawHomeArrow(ctx, human.land, humanHead);
   for (const p of order) {
     // The shield sits just under the human's head, so the head stays crisp inside it.
     if (p === human && humanHead && world.time < human.protectedUntil) {
@@ -682,6 +592,5 @@ export function render(
     ctx.fillText(p.name, sp.x, sp.y);
   }
 
-  if (humanHead && human.burn) drawBurnVignette(ctx, cam.viewW, cam.viewH, world.time, reduced);
   effects?.draw(ctx, cam);
 }

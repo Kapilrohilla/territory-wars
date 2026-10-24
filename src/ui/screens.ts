@@ -10,6 +10,7 @@ import { button, el, icon, labelRow, setText, statTile, svg, type IconName } fro
 import type { Lifetime } from './progress';
 import { createSkinsScreen, paintSkin, type SkinsView } from './skinsScreen';
 import type { Skin } from '../game/skins';
+import { DANGER_SHOW, dangerLevel, dangerWarningsEnabled } from '../game/danger';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -120,6 +121,17 @@ export type HudAlerts = { burning: boolean; shielded: boolean };
 /** HUD warnings for the human: the trail is burning, or the post-revive shield is up. */
 export function hudAlerts(p: Pick<Player, 'alive' | 'burn' | 'protectedUntil'>, time: number): HudAlerts {
   return { burning: p.alive && p.burn !== null, shielded: p.alive && time < p.protectedUntil };
+}
+
+/** Lit segments (0..3) of the "Far from home" meter: one per full third of danger. */
+export function dangerSegments(danger: number): number {
+  return Math.max(0, Math.min(3, Math.floor(danger * 3 + 1e-9)));
+}
+
+/** Heartbeat icon period (s) at a danger level: 1.0 − 0.55·danger, in 0.05 s steps. */
+export function heartbeatSeconds(danger: number): number {
+  const d = Math.max(0, Math.min(1, danger));
+  return Math.round((1 - 0.55 * d) * 20) / 20;
 }
 
 /** The difficulty holding the top best (by isBetter's order); null unless 2+ difficulties have one. */
@@ -290,7 +302,11 @@ export function createScreens(root: HTMLElement): Screens {
   let reducedPref = readFlag(REDUCED_MOTION_KEY, false);
   const motionQuery = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
   const reduceMotion = () => reducedPref || !!motionQuery?.matches;
-  const applyReduced = () => root.classList.toggle('tw-reduced-motion', reducedPref);
+  const applyReduced = () => {
+    root.classList.toggle('tw-reduced-motion', reducedPref);
+    // The canvas layers (render.ts prefersReducedMotion) read the flag from <html>.
+    document.documentElement.classList.toggle('tw-reduced-motion', reducedPref);
+  };
   applyReduced();
 
   type Toggle = { btn: HTMLButtonElement; sync(): void };
@@ -624,10 +640,29 @@ export function createScreens(root: HTMLElement): Screens {
 
   const alerts = el('div', 'tw-alerts');
   alerts.setAttribute('role', 'status');
+  // Both pills share one spot and cross-fade (in 200 ms, out 300 ms; see .tw-on).
   const burnPill = el('div', 'tw-burn-pill');
-  burnPill.append(icon('flame'), el('span', undefined, 'Your trail is burning — get home!'), icon('flame'));
-  burnPill.hidden = true;
-  alerts.append(burnPill);
+  burnPill.append(icon('flame'), el('span', undefined, 'Trail on fire — get home!'), icon('flame'));
+  const dangerPill = el('div', 'tw-danger-pill');
+  const heart = icon('heart-fill', 'tw-heart');
+  const meter = el('span', 'tw-danger-meter');
+  const segs: HTMLElement[] = [];
+  for (let i = 0; i < 3; i++) { const sg = el('span', 'tw-danger-seg'); segs.push(sg); meter.append(sg); }
+  dangerPill.append(heart, el('span', undefined, 'Far from home'), meter);
+  alerts.append(dangerPill, burnPill);
+  /** Last written HUD alert state, so the DOM is touched only on change. */
+  let shownBurn = false, shownDanger = false, shownSegs = -1, shownBeat = -1;
+  let warningsOn = true;
+  const setAlerts = (burning: boolean, danger: number) => {
+    const showDanger = !burning && danger >= DANGER_SHOW;
+    if (burning !== shownBurn) { shownBurn = burning; burnPill.classList.toggle('tw-on', burning); }
+    if (showDanger !== shownDanger) { shownDanger = showDanger; dangerPill.classList.toggle('tw-on', showDanger); }
+    if (!showDanger) return; // keep the last meter while it fades out
+    const n = dangerSegments(danger);
+    if (n !== shownSegs) { shownSegs = n; segs.forEach((sg, i) => sg.classList.toggle('tw-lit', i < n)); }
+    const beat = heartbeatSeconds(danger);
+    if (beat !== shownBeat) { shownBeat = beat; dangerPill.style.setProperty('--tw-beat', `${beat}s`); }
+  };
   const shieldToast = el('div', 'tw-shield-toast');
   shieldToast.append(icon('shield'), el('span', undefined, 'Revived! '), el('b', undefined, `Shield ${CONFIG.REVIVE_PROTECT_S}s`));
   shieldToast.hidden = true;
@@ -1001,7 +1036,9 @@ export function createScreens(root: HTMLElement): Screens {
       setText(pctNum, '0.00');
       setText(killsNum, '0');
       setText(timeNum, '0:00');
-      burnPill.hidden = shieldToast.hidden = burnTag.hidden = true;
+      shieldToast.hidden = burnTag.hidden = true;
+      warningsOn = dangerWarningsEnabled();
+      setAlerts(false, 0);
       area.classList.remove('tw-burning');
       steerHint.classList.remove('tw-gone');
       hudColor = -1;
@@ -1038,7 +1075,8 @@ export function createScreens(root: HTMLElement): Screens {
         areaDot.style.background = PALETTE.players[hudColor % PALETTE.players.length].base;
       }
       const a = hudAlerts(human, world.time);
-      burnPill.hidden = burnTag.hidden = !a.burning;
+      burnTag.hidden = !a.burning;
+      setAlerts(a.burning, warningsOn && !a.burning ? dangerLevel(world) : 0);
       area.classList.toggle('tw-burning', a.burning);
       shieldToast.hidden = !a.shielded;
       steerHint.classList.toggle('tw-gone', world.time > HINT_SECONDS);

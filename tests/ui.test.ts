@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  dangerSegments, heartbeatSeconds,
   buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
   highestBest, hudAlerts, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
@@ -231,5 +232,21 @@ describe('randomName', () => {
   });
   it('only returns names within the field limit by default', () => {
     for (let i = 0; i < 20; i++) expect(randomName('You', () => i / 20).length).toBeLessThanOrEqual(NAME_MAX);
+  });
+});
+
+describe('danger pill', () => {
+  it('lights one meter segment per full third of danger', () => {
+    expect(dangerSegments(0)).toBe(0);
+    expect(dangerSegments(0.35)).toBe(1);
+    expect(dangerSegments(2 / 3)).toBe(2);
+    expect(dangerSegments(0.9)).toBe(2);
+    expect(dangerSegments(1)).toBe(3);
+  });
+  it('beats faster with danger: 1.0 − 0.55·danger seconds', () => {
+    expect(heartbeatSeconds(0)).toBeCloseTo(1);
+    expect(heartbeatSeconds(1)).toBeCloseTo(0.45);
+    expect(heartbeatSeconds(0.5)).toBeCloseTo(0.75);
+    expect(heartbeatSeconds(0.9)).toBeLessThan(heartbeatSeconds(0.4));
   });
 });

@@ -20,7 +20,9 @@ export type SoundName =
   | 'start'      // a round begins
   | 'win'
   | 'gameover'
-  | 'newBest';
+  | 'newBest'
+  | 'heartbeat'  // tension layer: a soft lub-dub (`level` = danger 0..1)
+  | 'crackle';   // tension layer: an ember crackle while your trail burns (`level` = burn progress)
 
 export type SoundOpts = {
   /** capture: land gained, in % of the arena. */
@@ -29,6 +31,8 @@ export type SoundOpts = {
   streak?: number;
   /** milestone: 0, 1, 2 for 10 %, 25 %, 50 %. */
   tier?: number;
+  /** heartbeat: danger (0..1), louder when higher. crackle: burn progress (0..1). */
+  level?: number;
   /** Seconds to wait before the sound starts (to sequence sounds in one step). */
   delay?: number;
 };
@@ -177,6 +181,8 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
   src.onended = () => { for (const n of nodes) n.disconnect(); };
 }
 
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
 /** Notes as semitones above A4 (440 Hz). */
 const note = (semi: number) => 440 * 2 ** (semi / 12);
 
@@ -301,6 +307,17 @@ const SOUNDS: Record<SoundName, Synth> = {
     // Twinkly shimmer.
     [12, 19, 24, 19, 24, 31].forEach((s, i) =>
       tone(c, out, { f0: note(s), dur: 0.12, gain: 0.04, delay: i * 0.07 }));
+  },
+  heartbeat(c, out, o) {
+    // Soft "lub-dub": two low sine thumps 0.12 s apart, the second a touch lower and softer.
+    const g = 0.02 + 0.06 * clamp01(o.level ?? 0);
+    tone(c, out, { f0: 55, f1: 44, dur: 0.16, gain: g, attack: 0.012 });
+    tone(c, out, { f0: 48, f1: 40, dur: 0.18, gain: g * 0.8, attack: 0.012, delay: 0.12 });
+  },
+  crackle(c, out, o) {
+    // A tiny burst of band-passed noise at a random pitch, a little louder as the burn nears.
+    const p = clamp01(o.level ?? 0);
+    noise(c, out, { dur: 0.035 + Math.random() * 0.03, gain: 0.018 + 0.017 * p, freq: 2200 + Math.random() * 3000, q: 2.2 });
   },
 };
 

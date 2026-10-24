@@ -43,7 +43,7 @@ class FakeCtx {
 }
 
 const ALL: SoundName[] = ['capture', 'steal', 'cut', 'kill', 'burning', 'escape', 'down', 'revive',
-  'shieldDown', 'milestone', 'start', 'win', 'gameover', 'newBest'];
+  'shieldDown', 'milestone', 'start', 'win', 'gameover', 'newBest', 'heartbeat', 'crackle'];
 
 /** Envelopes (gain params ramped by a voice) scheduled while running fn. */
 function envelopes(fn: () => void): FakeParam[] {

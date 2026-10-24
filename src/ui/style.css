@@ -914,9 +914,22 @@ button:focus-visible,
   left: 0;
   right: 0;
   top: calc(var(--hud-top) + 140px);
-  display: flex;
-  justify-content: center;
+  display: grid;
+  justify-items: center;
   padding: 0 12px;
+  pointer-events: none;
+}
+/* The burn and danger pills stack in one cell and cross-fade: in 200 ms, out 300 ms. */
+.tw-burn-pill, .tw-danger-pill {
+  grid-area: 1 / 1;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 300ms ease-out, visibility 0s linear 300ms;
+}
+.tw-burn-pill.tw-on, .tw-danger-pill.tw-on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 200ms ease-out, visibility 0s;
 }
 .tw-burn-pill {
   display: inline-flex;
@@ -927,14 +940,44 @@ button:focus-visible,
   background: var(--danger-bg);
   box-shadow: inset 0 0 0 2.5px var(--danger), 0 6px 18px rgba(180, 35, 47, 0.2);
   color: var(--danger);
-  font: 900 15px var(--font-display);
+  font: 800 15px var(--font-display);
   letter-spacing: 0.02em;
   text-transform: uppercase;
   text-align: center;
-  animation: tw-pulse 900ms ease-in-out infinite alternate;
 }
+.tw-burn-pill.tw-on { animation: tw-pulse 900ms ease-in-out infinite alternate; }
 .tw-burn-pill .tw-icon { width: 20px; height: 20px; color: var(--ember); }
 @keyframes tw-pulse { from { transform: scale(1); } to { transform: scale(1.04); } }
+
+/* "Far from home": translucent white pill, beating heart, 3-segment ember meter. */
+.tw-danger-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 0 0 2px rgba(255, 122, 89, 0.45), var(--shadow-float);
+  color: var(--ink);
+  font: 800 14px var(--font-display);
+  white-space: nowrap;
+}
+.tw-heart { width: 18px; height: 18px; color: var(--ember); }
+.tw-danger-pill.tw-on .tw-heart { animation: tw-heartbeat var(--tw-beat, 0.8s) ease-in-out infinite; }
+@keyframes tw-heartbeat {
+  0%, 60%, 100% { transform: scale(1); }
+  14% { transform: scale(1.22); }
+  28% { transform: scale(1); }
+  42% { transform: scale(1.12); }
+}
+.tw-danger-meter { display: inline-flex; gap: 3px; }
+.tw-danger-seg {
+  width: 14px;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(255, 122, 89, 0.2);
+}
+.tw-danger-seg.tw-lit { background: linear-gradient(90deg, var(--ember), #ffb347); }
 
 .tw-shield-toast {
   position: absolute;
