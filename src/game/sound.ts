@@ -21,7 +21,7 @@ export type SoundName =
   | 'win'
   | 'gameover'
   | 'newBest'
-  | 'heartbeat'  // tension layer: a soft lub-dub (`level` = danger 0..1)
+  | 'heartbeat'  // tension layer: a soft lub-dub (`gain` from tension.ts beatGain)
   | 'crackle';   // tension layer: an ember crackle while your trail burns (`level` = burn progress)
 
 export type SoundOpts = {
@@ -31,8 +31,10 @@ export type SoundOpts = {
   streak?: number;
   /** milestone: 0, 1, 2 for 10 %, 25 %, 50 %. */
   tier?: number;
-  /** heartbeat: danger (0..1), louder when higher. crackle: burn progress (0..1). */
+  /** crackle: burn progress (0..1), a little louder as the burn nears. */
   level?: number;
+  /** heartbeat: peak gain of the main thump (the caller scales it with danger). */
+  gain?: number;
   /** Seconds to wait before the sound starts (to sequence sounds in one step). */
   delay?: number;
 };
@@ -309,15 +311,23 @@ const SOUNDS: Record<SoundName, Synth> = {
       tone(c, out, { f0: note(s), dur: 0.12, gain: 0.04, delay: i * 0.07 }));
   },
   heartbeat(c, out, o) {
-    // Soft "lub-dub": two low sine thumps 0.12 s apart, the second a touch lower and softer.
-    const g = 0.02 + 0.06 * clamp01(o.level ?? 0);
-    tone(c, out, { f0: 55, f1: 44, dur: 0.16, gain: g, attack: 0.012 });
-    tone(c, out, { f0: 48, f1: 40, dur: 0.18, gain: g * 0.8, attack: 0.012, delay: 0.12 });
+    // Soft "lub-dub" 0.12 s apart. A steady sub thump gives body on headphones; small phone
+    // speakers can't play ~50 Hz, so a short 150–300 Hz knock (a triangle partial plus a
+    // low-passed noise thud) carries it there.
+    const g = o.gain ?? 0.04;
+    const beat = (at: number, sub: number, knock: number, k: number) => {
+      tone(c, out, { f0: sub, dur: 0.16, gain: g * k, attack: 0.012, delay: at });
+      tone(c, out, { type: 'triangle', f0: knock, dur: 0.09, gain: g * 0.9 * k, attack: 0.008, delay: at });
+      tone(c, out, { f0: knock * 1.5, dur: 0.06, gain: g * 0.35 * k, attack: 0.008, delay: at });
+      noise(c, out, { dur: 0.07, gain: g * 0.8 * k, freq: knock + 60, q: 1.4, type: 'lowpass', delay: at });
+    };
+    beat(0, 55, 190, 1);
+    beat(0.12, 48, 165, 0.8);
   },
   crackle(c, out, o) {
     // A tiny burst of band-passed noise at a random pitch, a little louder as the burn nears.
     const p = clamp01(o.level ?? 0);
-    noise(c, out, { dur: 0.035 + Math.random() * 0.03, gain: 0.018 + 0.017 * p, freq: 2200 + Math.random() * 3000, q: 2.2 });
+    noise(c, out, { dur: 0.035 + Math.random() * 0.03, gain: 0.045 + 0.03 * p, freq: 1600 + Math.random() * 2400, q: 2 });
   },
 };
 

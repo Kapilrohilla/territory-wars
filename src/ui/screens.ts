@@ -10,7 +10,7 @@ import { button, el, icon, labelRow, setText, statTile, svg, type IconName } fro
 import type { Lifetime } from './progress';
 import { createSkinsScreen, paintSkin, type SkinsView } from './skinsScreen';
 import type { Skin } from '../game/skins';
-import { DANGER_SHOW, dangerLevel, dangerWarningsEnabled } from '../game/danger';
+import { DANGER_SHOW } from '../game/danger';
 
 // ---------- pure helpers (unit-tested) ----------
 
@@ -284,7 +284,8 @@ export type Screens = {
   showPause(handlers: PauseHandlers): void;
   hidePause(): void;
   /** Refreshes the HUD; returns true while the % counter is animating (call tickHud per frame). */
-  updateHud(world: World, now: number): boolean;
+  /** `danger` is the session's sampled danger level (0 when danger warnings are off). */
+  updateHud(world: World, now: number, danger?: number): boolean;
   /** Advances the % counter animation; returns true while it is still animating. */
   tickHud(now: number): boolean;
   showOver(stats: OverStats, onAgain: () => void, onHome: () => void, nativeAd?: NativeAdSlot): void;
@@ -652,7 +653,6 @@ export function createScreens(root: HTMLElement): Screens {
   alerts.append(dangerPill, burnPill);
   /** Last written HUD alert state, so the DOM is touched only on change. */
   let shownBurn = false, shownDanger = false, shownSegs = -1, shownBeat = -1;
-  let warningsOn = true;
   const setAlerts = (burning: boolean, danger: number) => {
     const showDanger = !burning && danger >= DANGER_SHOW;
     if (burning !== shownBurn) { shownBurn = burning; burnPill.classList.toggle('tw-on', burning); }
@@ -1037,7 +1037,6 @@ export function createScreens(root: HTMLElement): Screens {
       setText(killsNum, '0');
       setText(timeNum, '0:00');
       shieldToast.hidden = burnTag.hidden = true;
-      warningsOn = dangerWarningsEnabled();
       setAlerts(false, 0);
       area.classList.remove('tw-burning');
       steerHint.classList.remove('tw-gone');
@@ -1062,7 +1061,7 @@ export function createScreens(root: HTMLElement): Screens {
       setText(pctNum, Math.max(0, pctTween.value(now)).toFixed(2));
       return pctTween.active(now);
     },
-    updateHud(world, now) {
+    updateHud(world, now, danger = 0) {
       const human = world.players[world.humanId];
       const p = pct(world, human.id);
       if (reduceMotion()) pctTween.snap(p);
@@ -1076,7 +1075,7 @@ export function createScreens(root: HTMLElement): Screens {
       }
       const a = hudAlerts(human, world.time);
       burnTag.hidden = !a.burning;
-      setAlerts(a.burning, warningsOn && !a.burning ? dangerLevel(world) : 0);
+      setAlerts(a.burning, danger);
       area.classList.toggle('tw-burning', a.burning);
       shieldToast.hidden = !a.shielded;
       steerHint.classList.toggle('tw-gone', world.time > HINT_SECONDS);

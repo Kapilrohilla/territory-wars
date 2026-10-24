@@ -17,6 +17,21 @@ class FakeNode {
 }
 const gains: FakeParam[] = [];
 let starts: number[] = [];
+const oscs: FakeSource[] = [];
+const filters: { frequency: FakeParam }[] = [];
+/** First scheduled frequency of each oscillator and filter created while running fn. */
+function freqs(fn: () => void): { osc: number[]; filter: number[]; glides: number[] } {
+  oscs.length = 0;
+  filters.length = 0;
+  fn();
+  const f0 = (p: FakeParam) => p.calls.find((c) => c.kind === 'set')?.v ?? p.value;
+  return {
+    osc: oscs.map((o) => f0(o.frequency)),
+    filter: filters.map((f) => f0(f.frequency)),
+    glides: oscs.filter((o) => o.frequency.calls.some((c) => c.kind === 'exp')).map((o) => f0(o.frequency)),
+  };
+}
+const peak = (env: FakeParam[]) => Math.max(...env.flatMap((p) => p.calls.map((c) => c.v)));
 class FakeSource extends FakeNode {
   frequency = new FakeParam();
   type = '';
@@ -36,9 +51,13 @@ class FakeCtx {
     gains.push(n.gain);
     return n;
   }
-  createOscillator() { return new FakeSource(); }
+  createOscillator() { const o = new FakeSource(); oscs.push(o); return o; }
   createBufferSource() { return new FakeSource(); }
-  createBiquadFilter() { return Object.assign(new FakeNode(), { type: '', frequency: new FakeParam(), Q: new FakeParam() }); }
+  createBiquadFilter() {
+    const f = Object.assign(new FakeNode(), { type: '', frequency: new FakeParam(), Q: new FakeParam() });
+    filters.push(f);
+    return f;
+  }
   createBuffer(_c: number, n: number) { const d = new Float32Array(n); return { getChannelData: () => d }; }
 }
 
@@ -88,6 +107,25 @@ describe('sound', () => {
     const base = Math.min(...starts);
     envelopes(() => playSound('capture', { pct: 2, delay: 0.25 }));
     expect(Math.min(...starts)).toBeCloseTo(base + 0.25, 9);
+  });
+
+  it('heartbeat: a steady low thump plus an audible 150–300 Hz layer for phone speakers', () => {
+    const f = freqs(() => playSound('heartbeat', { gain: 0.05 }));
+    expect(f.osc.some((hz) => hz < 70)).toBe(true); // body
+    expect(f.glides.filter((hz) => hz < 100)).toEqual([]); // the low thump doesn't glide down
+    expect([...f.osc, ...f.filter].some((hz) => hz >= 150 && hz <= 300)).toBe(true);
+  });
+
+  it('heartbeat loudness follows the gain it is given', () => {
+    const soft = peak(envelopes(() => playSound('heartbeat', { gain: 0.02 })));
+    const loud = peak(envelopes(() => playSound('heartbeat', { gain: 0.08 })));
+    expect(loud).toBeGreaterThan(soft * 2);
+  });
+
+  it('crackle is loud enough to register over gameplay, in a phone-friendly band', () => {
+    expect(peak(envelopes(() => playSound('crackle', { level: 0 })))).toBeGreaterThanOrEqual(0.04);
+    const f = freqs(() => playSound('crackle', { level: 1 }));
+    for (const hz of f.filter) { expect(hz).toBeGreaterThanOrEqual(1000); expect(hz).toBeLessThanOrEqual(5000); }
   });
 
   it('muted plays nothing', () => {

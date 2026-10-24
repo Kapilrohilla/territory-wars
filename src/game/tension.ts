@@ -83,7 +83,7 @@ type Play = (name: SoundName, opts?: SoundOpts) => void;
 
 export function createTension(play: Play = playSound): Tension {
   const clock = createTensionClock();
-  const beatOpts: SoundOpts = { level: 0 };
+  const beatOpts: SoundOpts = { gain: 0 };
   const crackleOpts: SoundOpts = { level: 0 };
   /** Danger of the last update, to catch the drop to 0 on reaching home. */
   let prev = 0;
@@ -104,7 +104,7 @@ export function createTension(play: Play = playSound): Tension {
       tickTension(clock, d.level, d.burn, dt);
       // With danger warnings off only the burn crackle remains.
       if (clock.beat && d.warnings) {
-        beatOpts.level = d.burn !== null ? Math.max(d.level, TENSION_MIN) : d.level;
+        beatOpts.gain = beatGain(d.burn !== null ? Math.max(d.level, TENSION_MIN) : d.level);
         play('heartbeat', beatOpts);
       }
       if (clock.crackle) {

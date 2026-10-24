@@ -147,6 +147,17 @@ describe('createTension', () => {
     expect(played).toEqual([]);
   });
 
+  it('hands the heartbeat its gain from beatGain (single source)', () => {
+    const w = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+    const gains: (number | undefined)[] = [];
+    const t = createTension((n, o) => { if (n === 'heartbeat') gains.push(o?.gain); });
+    const d = createDangerState(true);
+    w.players[w.humanId].trail = [{ x: 0, y: 0 }];
+    d.level = 0.7;
+    t.update(w, 1 / 60, d);
+    expect(gains).toEqual([beatGain(0.7)]);
+  });
+
   it('keeps the crackle but drops the heartbeat with danger warnings off', () => {
     const { w, played, t, d, out } = setup();
     out();

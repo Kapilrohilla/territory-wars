@@ -13,7 +13,7 @@ import { playSound } from './sound';
 import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
 import { createMoodState, moodEvents, moodOf } from './moods';
 import { botSkin, faceFor, skinById } from './skins';
-import { createDangerState, sampleDanger } from './danger';
+import { createDangerState, sampleDanger, type DangerState } from './danger';
 import { createOverlay } from './overlay';
 import { createTension } from './tension';
 
@@ -48,6 +48,11 @@ export type Session = {
   camera: Camera;
   fx: Fx;
   effects: Effects;
+  /**
+   * This frame's danger sample (level is 0 with danger warnings off), shared by the overlay,
+   * the tension sounds and the HUD so they always agree.
+   */
+  readonly danger: DangerState;
   /** Human's % at the moment the game ended (land at death, before the shrink). */
   finalPct(): number;
   start(): void;
@@ -267,6 +272,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     camera,
     fx,
     effects,
+    danger,
     finalPct: () => finalPct,
     start() {
       if (disposed || running || overNotified || paused) return;
