@@ -175,6 +175,28 @@ export function spatialFor(at: Vec, view: ListenerView, head: Vec, dir: boolean)
   };
 }
 
+/**
+ * Wires master to the speakers through a gentle limiter (−10 dB threshold, soft 6 dB knee,
+ * 4:1, fast attack), so stacked cues (capture chord + relief + fanfare + kill) can't clip.
+ * Without createDynamicsCompressor (old engines, test fakes) master goes straight out.
+ * Returns the limiter, or null.
+ */
+export function connectMaster(c: AudioContext, m: GainNode): DynamicsCompressorNode | null {
+  if (typeof c.createDynamicsCompressor !== 'function') {
+    m.connect(c.destination);
+    return null;
+  }
+  const lim = c.createDynamicsCompressor();
+  lim.threshold.value = -10;
+  lim.knee.value = 6;
+  lim.ratio.value = 4;
+  lim.attack.value = 0.003;
+  lim.release.value = 0.15;
+  m.connect(lim);
+  lim.connect(c.destination);
+  return lim;
+}
+
 /** Call from a user-gesture handler (a click or key press). Safe to call repeatedly. */
 export function unlockAudio(): void {
   if (failed) return;
@@ -186,7 +208,7 @@ export function unlockAudio(): void {
       ctx = new Ctor();
       master = ctx.createGain();
       master.gain.value = masterLevel();
-      master.connect(ctx.destination);
+      connectMaster(ctx, master);
     }
     if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
   } catch {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { playSound, setMuted, unlockAudio, type SoundName } from '../src/game/sound';
+import { connectMaster, playSound, setMuted, unlockAudio, type SoundName } from '../src/game/sound';
 
 /** Records every gain envelope a sound schedules, so peaks and ramps can be checked. */
 type Call = { kind: string; v: number; t: number };
@@ -159,5 +159,28 @@ describe('sound', () => {
     expect(Math.max(...starts)).toBeLessThan(0.15);
     expect(peak(envelopes(() => playSound('overtake')))).toBeLessThanOrEqual(0.07);
     expect(f.osc[f.osc.length - 1]).toBeGreaterThan(f.osc[0]); // rising
+  });
+
+  it('master chain: a gentle limiter before the speakers, straight through without one', () => {
+    const links: [string, string][] = [];
+    const node = <T extends object>(name: string, extra: T = {} as T) =>
+      Object.assign({ name, connect: (to: { name: string }) => { links.push([name, to.name]); } }, extra);
+    const param = () => ({ value: 0 });
+    const comp = node('limiter', { threshold: param(), knee: param(), ratio: param(), attack: param(), release: param() });
+    const withComp = { destination: node('out'), createDynamicsCompressor: () => comp };
+    const master = node('master');
+    const got = connectMaster(withComp as unknown as AudioContext, master as unknown as GainNode);
+    expect(got).toBe(comp);
+    expect(links).toEqual([['master', 'limiter'], ['limiter', 'out']]);
+    expect(comp.threshold.value).toBe(-10);
+    expect(comp.knee.value).toBe(6);
+    expect(comp.ratio.value).toBe(4);
+    expect(comp.attack.value).toBeCloseTo(0.003, 9);
+    expect(comp.release.value).toBeCloseTo(0.15, 9);
+
+    links.length = 0;
+    const bare = { destination: node('out') }; // no createDynamicsCompressor (old engines, mocks)
+    expect(connectMaster(bare as unknown as AudioContext, master as unknown as GainNode)).toBeNull();
+    expect(links).toEqual([['master', 'out']]);
   });
 });
