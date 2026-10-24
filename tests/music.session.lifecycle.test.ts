@@ -13,16 +13,17 @@ const canvas = () => ({
 
 function stubMusic() {
   const calls: string[] = [];
+  const moods = new Set<unknown>();
   const m: MusicPlayer = {
     start() { calls.push('start'); setTranspose(-3); },
     pause() { calls.push('pause'); },
     resume() { calls.push('resume'); },
     dispose() { calls.push('dispose'); setTranspose(0); },
-    setMood() {},
-    events(list) { for (const x of list) calls.push(`e:${x.e}`); },
+    setMood(mood) { moods.add(mood); },
+    events(list) { if (list.length === 0) calls.push('empty'); for (const x of list) calls.push(`e:${x.e}`); },
     playing: false,
   };
-  return { m, calls };
+  return { m, calls, moods };
 }
 
 let raf: ((t: number) => void) | null = null;
@@ -57,7 +58,7 @@ describe('session drives music', () => {
 
   it('a declined revive ends the round with the music disposed and transpose back at 0', async () => {
     const { createSession } = await import('../src/game/session');
-    const { m, calls } = stubMusic();
+    const { m, calls, moods } = stubMusic();
     let over = false;
     let transposeAtOver = NaN;
     const s = createSession(canvas(), { seed: 1, music: m, onOver: () => { over = true; transposeAtOver = getTranspose(); } });
@@ -73,6 +74,9 @@ describe('session drives music', () => {
     expect(calls).toContain('e:down');
     expect(calls).toContain('e:gameover');
     expect(calls).toContain('dispose');
+    // Per step and per frame without garbage: silent steps skip the music, one mood object is reused.
+    expect(calls).not.toContain('empty');
+    expect(moods.size).toBe(1);
     expect(transposeAtOver).toBe(0); // already reset when the results screen is shown
     expect(getTranspose()).toBe(0);
     s.dispose();

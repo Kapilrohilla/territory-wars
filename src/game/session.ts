@@ -11,7 +11,7 @@ import { drawMinimap } from './minimap';
 import { createSfxState, soundsFor, type Cue } from './sfxEvents';
 import { currentListener, duckMusic, playSound, setListener } from './sound';
 import { createMusicPlayer, type MusicPlayer } from './music/player';
-import { tierFor } from './music/composer';
+import { tierFor, type MusicMood } from './music/composer';
 import { musicEventsFor } from './music/fromCues';
 import { ROUND_KEYS } from './music/theory';
 import { createFx, interpPos, prefersReducedMotion, render, snapshotFx, type Fx } from './render';
@@ -237,9 +237,13 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     }
     // Every step, even a silent one: the revive shield's end is a state edge, not an event.
     const cues = soundsFor(world.events, world, sfx);
-    // Before the sounds, so a milestone fanfare already uses the music's new transpose.
+    if (cues.length === 0) return;
+    // A milestone lifts the music's key from its next bar, so its fanfare here stays in tune
+    // with the bar still ringing.
     music.events(musicEventsFor(cues));
-    if (cues.some((c) => c.name === 'capture' || c.name === 'steal' || c.name === 'kill' || c.name === 'milestone')) duckMusic();
+    let duck = false;
+    for (const c of cues) if (c.name === 'capture' || c.name === 'steal' || c.name === 'kill' || c.name === 'milestone') duck = true;
+    if (duck) duckMusic();
     for (const cue of cues) {
       playSound(cue.name, cue);
       tension.heard(cue.name, cue.delay);
@@ -249,6 +253,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   /** The human's share on the last step it was alive (see finalSharePct). */
   let alivePct = 0;
   const recordFinalPct = () => { finalPct = finalSharePct(world, alivePct); };
+
+  /** The music mood, refilled each frame rather than allocated. */
+  const musicMood: MusicMood = { tier: 0, danger: 0 };
 
   // Knocked out: the world is frozen behind the revive offer; rendering goes on.
   let downAt: number | null = null;
@@ -287,7 +294,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     effects.update(dt * fxScale);
     if (now - hudRectsAt >= HUD_RECTS_MS) refreshHudRects();
     sampleDanger(world, danger);
-    music.setMood({ tier: tierFor(world.players[world.humanId].trail.length > 0, danger.raw, danger.burn !== null), danger: danger.raw });
+    musicMood.tier = tierFor(world.players[world.humanId].trail.length > 0, danger.raw, danger.burn !== null);
+    musicMood.danger = danger.raw;
+    music.setMood(musicMood);
     // Real time, and only while the loop runs: silent when paused (no frames), and the
     // controller itself goes quiet behind the revive offer and once the round is over.
     tension.update(world, dt, danger);
@@ -325,8 +334,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       if (overAt === null) {
         overAt = now;
         disposeInput();
-        // The closing cadence (if any) is already queued; the player lets it ring out, and the
+        // The closing cadence (if any) is already built; the player lets it ring out, and the
         // effect transpose goes back to 0 here so the results screen's sounds aren't shifted.
+        // dispose() below calls it again, which cuts a still-ringing cadence (Play again).
         music.dispose();
       }
       if (now - overAt >= OVER_TAIL_MS) {
