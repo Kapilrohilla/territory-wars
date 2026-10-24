@@ -14,7 +14,7 @@ import { createFx, interpPos, render, snapshotFx, type Fx } from './render';
 import { createMoodState, moodEvents, moodOf } from './moods';
 import { botSkin, faceFor, skinById } from './skins';
 import { createDangerState, sampleDanger, type DangerState } from './danger';
-import { createOverlay } from './overlay';
+import { createOverlay, type Rect } from './overlay';
 import { createTension } from './tension';
 import { createThreatAlert, findThreats, tickThreatAlert, type Threat } from './threats';
 
@@ -42,7 +42,15 @@ export type SessionOpts = {
   onDown?: (world: World, killerName: string | null) => void;
   /** Asked before each revive; it only happens on true. The hook for a future rewarded ad. */
   requestRevive?: () => Promise<boolean>;
+  /**
+   * Screen rects (CSS px) of the HUD cards that threat arrows and their tooltip keep clear
+   * of. Read on resize and about once a second (the leaderboard grows), never per frame.
+   */
+  hudRects?: () => readonly Rect[];
 };
+
+/** How often (ms) the HUD rects are re-read while the round runs. */
+const HUD_RECTS_MS = 1000;
 
 export type Session = {
   world: World;
@@ -142,6 +150,13 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     if (miniCtx && miniSize > 0) drawMinimap(miniCtx, world, miniSize, dpr, alpha, camera, threats);
   };
 
+  let hudRectsAt = -Infinity;
+  const refreshHudRects = () => {
+    if (!opts.hudRects) return;
+    hudRectsAt = performance.now();
+    overlay.setAvoid(opts.hudRects());
+  };
+
   const resize = () => {
     dpr = Math.min(MAX_DPR, window.devicePixelRatio || 1);
     const w = window.innerWidth, h = window.innerHeight;
@@ -155,6 +170,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       mini.width = Math.round(miniSize * dpr);
       mini.height = Math.round(miniSize * dpr);
     }
+    refreshHudRects();
     // Resizing clears the canvas; repaint so it never goes blank while stopped or frozen.
     if (!running || world.awaitingRevive) paint(lastAlpha);
   };
@@ -211,6 +227,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     const a = world.over || world.awaitingRevive ? 1 : alpha;
     lastAlpha = a;
     effects.update(dt);
+    if (now - hudRectsAt >= HUD_RECTS_MS) refreshHudRects();
     sampleDanger(world, danger);
     // Real time, and only while the loop runs: silent when paused (no frames), and the
     // controller itself goes quiet behind the revive offer and once the round is over.

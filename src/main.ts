@@ -148,6 +148,7 @@ function play(prefs: StartPrefs): void {
   const lifetimeBefore = loadLifetime();
   const s = createSession(canvas, {
     minimap: ui.minimap,
+    hudRects: () => ui.hudRects(),
     humanName: prefs.name,
     humanSkin: loadSkin(lifetimeBefore, loadAdUnlocks()).id,
     difficulty: prefs.difficulty,

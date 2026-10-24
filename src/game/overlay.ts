@@ -18,6 +18,11 @@ export type Overlay = {
   update(world: World, cam: Camera, dt: number, alpha: number): void;
   /** Draws in CSS pixels (ctx transform = DPR only), after render(). */
   draw(ctx: CanvasRenderingContext2D, cam: Camera): void;
+  /**
+   * Screen rects (CSS px) of HUD cards that threat arrows and the tooltip keep clear of.
+   * Set on resize / HUD changes, not per frame; the rects are copied.
+   */
+  setAvoid(rects: readonly Rect[]): void;
 };
 
 /** Home arrow tail: this far (world units) from the head toward home. */
@@ -51,30 +56,155 @@ const THREAT_EDGE_INSET = 18;
 const THREAT_FACE_PX = 16;
 const THREAT_CLOSEST_SCALE = 1.15;
 const THREAT_PULSE_HZ = 2;
-const THREAT_FONT = '800 10px Rubik, system-ui, -apple-system, "Segoe UI", sans-serif';
+/** Clearance (px) between an arrow's centre and a HUD card: the scaled chip plus its lip. */
+const THREAT_AVOID_PAD = THREAT_CHIP_R * THREAT_CLOSEST_SCALE + LIP_PX + 2;
+const THREAT_FONT = '800 11px Rubik, system-ui, -apple-system, "Segoe UI", sans-serif';
 /** "0m" … "18m", built once so labels never allocate per frame. */
 const DIST_LABELS = Array.from({ length: THREAT_RANGE + 2 }, (_, i) => `${i}m`);
 
 /** First-time tooltip beside the first threat arrow ever shown. */
 export const THREAT_TIP_KEY = 'territory-wars.threatTipSeen';
 export const THREAT_TIP_TEXT = 'Rival heading for your trail';
-const THREAT_TIP_S = 2.5;
+export const THREAT_TIP_S = 2.5;
 const TIP_FONT = '700 13px Rubik, system-ui, -apple-system, "Segoe UI", sans-serif';
 const TIP_H = 28;
 const TIP_PAD = 12;
 
 type FlagStore = { getItem(key: string): string | null; setItem(key: string, value: string): void };
 
-function tipSeen(store: FlagStore | undefined = globalThis.localStorage): boolean {
+/**
+ * Whether the first-time threat tooltip was already shown. Storage is looked up inside the
+ * try: merely touching localStorage throws where site data is blocked.
+ */
+export function tipSeen(store?: FlagStore): boolean {
   try {
-    return store?.getItem(THREAT_TIP_KEY) === '1';
+    return (store ?? globalThis.localStorage)?.getItem(THREAT_TIP_KEY) === '1';
   } catch {
     return false;
   }
 }
 
-function markTipSeen(store: FlagStore | undefined = globalThis.localStorage): void {
-  try { store?.setItem(THREAT_TIP_KEY, '1'); } catch { /* storage unavailable */ }
+function markTipSeen(store?: FlagStore): void {
+  try { (store ?? globalThis.localStorage)?.setItem(THREAT_TIP_KEY, '1'); } catch { /* storage unavailable */ }
+}
+
+/** The first-time tooltip's progress; see stepTip. */
+export type TipState = {
+  /** A tooltip has been started (or was seen in an earlier session). */
+  started: boolean;
+  /** Seconds it has left, and the rival whose arrow it belongs to. */
+  left: number;
+  id: number;
+  /** It has actually been on screen (the seen flag is saved then). */
+  shown: boolean;
+};
+
+export function createTipState(seen: boolean): TipState {
+  return { started: seen, left: 0, id: -1, shown: seen };
+}
+
+/**
+ * Advances the tooltip by dt. `firstId` is the closest threat with an arrow this frame (-1
+ * for none); `arrowShown(id)` says whether that rival's arrow is on screen. The first arrow
+ * starts a THREAT_TIP_S tooltip beside it, drawn while that arrow shows. The seen flag is
+ * saved (`persist`) the first time it is actually drawn; if it runs out unseen, the next
+ * arrow starts it again. Returns whether to draw it this frame.
+ */
+export function stepTip(s: TipState, firstId: number, arrowShown: (id: number) => boolean, dt: number,
+  persist: () => void): boolean {
+  if (!s.started && firstId >= 0) {
+    s.started = true;
+    s.id = firstId;
+    s.left = THREAT_TIP_S;
+  }
+  if (s.left <= 0) return false;
+  const draw = arrowShown(s.id);
+  if (draw && !s.shown) {
+    s.shown = true;
+    persist();
+  }
+  s.left = Math.max(0, s.left - dt);
+  if (s.left === 0 && !s.shown) s.started = false; // never seen: the next arrow tries again
+  return draw;
+}
+
+/** A screen rectangle in CSS px (e.g. a HUD card the indicators must not hide under). */
+export type Rect = { x: number; y: number; w: number; h: number };
+
+const inRect = (x: number, y: number, r: Rect, pad: number) =>
+  x > r.x - pad && x < r.x + r.w + pad && y > r.y - pad && y < r.y + r.h + pad;
+
+const clearOf = (x: number, y: number, avoid: readonly Rect[], pad: number) => {
+  for (const r of avoid) if (inRect(x, y, r, pad)) return false;
+  return true;
+};
+
+/**
+ * Where an edge arrow goes (its centre, written to out): where the ray from the viewport
+ * centre along (dx, dy) crosses the viewport inset by `inset`. If that falls within `pad` of
+ * an avoid rect, it slides along that edge to the nearest spot clear of every rect (still
+ * inside the inset edge); with no such spot it stays put.
+ */
+export function placeArrow(dx: number, dy: number, viewW: number, viewH: number, inset: number, pad: number,
+  avoid: readonly Rect[], out: { x: number; y: number }): { x: number; y: number } {
+  const cx = viewW / 2, cy = viewH / 2;
+  const halfW = Math.max(1, cx - inset), halfH = Math.max(1, cy - inset);
+  const kx = dx !== 0 ? halfW / Math.abs(dx) : Infinity;
+  const ky = dy !== 0 ? halfH / Math.abs(dy) : Infinity;
+  const k = Math.min(kx, ky);
+  const x = cx + dx * k, y = cy + dy * k;
+  out.x = x;
+  out.y = y;
+  if (avoid.length === 0 || clearOf(x, y, avoid, pad)) return out;
+  // Left/right edge: slide in y; top/bottom edge: slide in x. Candidates are the sides of
+  // each rect (grown by pad); the nearest one inside the edge and clear of all rects wins.
+  const vertical = kx <= ky;
+  const at = vertical ? y : x;
+  const lo = vertical ? cy - halfH : cx - halfW, hi = vertical ? cy + halfH : cx + halfW;
+  let best = Infinity, bestAt = at;
+  for (const r of avoid) {
+    for (let side = 0; side < 2; side++) {
+      const c = vertical ? (side ? r.y + r.h + pad : r.y - pad) : (side ? r.x + r.w + pad : r.x - pad);
+      if (c < lo || c > hi || Math.abs(c - at) >= best) continue;
+      if (!clearOf(vertical ? x : c, vertical ? c : y, avoid, pad)) continue;
+      best = Math.abs(c - at);
+      bestAt = c;
+    }
+  }
+  if (vertical) out.y = bestAt;
+  else out.x = bestAt;
+  return out;
+}
+
+const boxClear = (x: number, y: number, w: number, h: number, avoid: readonly Rect[]) => {
+  for (const r of avoid) if (x < r.x + r.w && r.x < x + w && y < r.y + r.h && r.y < y + h) return false;
+  return true;
+};
+
+/** How far (px) and in how many steps placeTip walks inward looking for a clear spot. */
+const TIP_STEP = 24;
+const TIP_STEPS = 12;
+
+/**
+ * Top-left corner (written to out) of a w×h tooltip for an arrow at (ax, ay) pointing at
+ * `angle`: `reach` px from the arrow toward the screen centre, kept `margin` inside the
+ * viewport. If that overlaps an avoid rect it walks further inward until clear; with no clear
+ * spot it keeps the first one.
+ */
+export function placeTip(ax: number, ay: number, angle: number, w: number, h: number, viewW: number, viewH: number,
+  margin: number, reach: number, avoid: readonly Rect[], out: { x: number; y: number }): { x: number; y: number } {
+  const ux = -Math.cos(angle), uy = -Math.sin(angle);
+  const maxX = Math.max(margin, viewW - margin - w), maxY = Math.max(margin, viewH - margin - h);
+  for (let i = 0; i <= TIP_STEPS; i++) {
+    const d = reach + i * TIP_STEP;
+    out.x = Math.max(margin, Math.min(maxX, ax + ux * (d + w / 2) - w / 2));
+    out.y = Math.max(margin, Math.min(maxY, ay + uy * (d + h / 2) - h / 2));
+    if (boxClear(out.x, out.y, w, h, avoid)) return out;
+  }
+  // Nothing clear: the first spot.
+  out.x = Math.max(margin, Math.min(maxX, ax + ux * (reach + w / 2) - w / 2));
+  out.y = Math.max(margin, Math.min(maxY, ay + uy * (reach + h / 2) - h / 2));
+  return out;
 }
 
 /** One edge arrow's place this frame (screen px) and what it shows. */
@@ -132,11 +262,18 @@ export function createOverlay(danger: DangerState, threats: readonly Threat[] = 
   const arrows: Arrow[] = Array.from({ length: MAX_THREATS }, () =>
     ({ show: false, player: null, x: 0, y: 0, angle: 0, label: '', closest: false }));
   let anyArrow = false;
-  let tipDone = tipSeen();
-  /** Seconds the tooltip has left, and the rival whose arrow it sits beside. */
-  let tipLeft = 0;
-  let tipId = -1;
+  /** Id of the closest threat with an arrow this frame, or -1. */
+  let firstArrowId = -1;
+  const avoid: Rect[] = [];
+  const spot = { x: 0, y: 0 };
+  const tip = createTipState(tipSeen());
+  let tipDraw = false;
   let tipTextW = 0;
+  const arrowShown = (id: number) => {
+    for (const a of arrows) if (a.show && a.player?.id === id) return true;
+    return false;
+  };
+  const persistTip = () => markTipSeen();
   let reduced = false;
   let showHome = false;
   /** Interpolated head and home point, world units. */
@@ -162,7 +299,12 @@ export function createOverlay(danger: DangerState, threats: readonly Threat[] = 
         homeDist = home.dist;
       }
       updateArrows(world, cam, alpha);
-      if (tipLeft > 0) tipLeft = Math.max(0, tipLeft - dt);
+      tipDraw = stepTip(tip, firstArrowId, arrowShown, dt, persistTip);
+    },
+
+    setAvoid(rects) {
+      avoid.length = 0;
+      for (const r of rects) avoid.push({ x: r.x, y: r.y, w: r.w, h: r.h });
     },
 
     draw(ctx, cam) {
@@ -193,9 +335,8 @@ export function createOverlay(danger: DangerState, threats: readonly Threat[] = 
     const w = cam.viewW, h = cam.viewH, s = cam.scale();
     const margin = 0.6 * s; // half a head: an arrow only once the whole head is out of view
     const cx = w / 2, cy = h / 2;
-    const hx = Math.max(1, cx - THREAT_EDGE_INSET - THREAT_CHIP_R);
-    const hy = Math.max(1, cy - THREAT_EDGE_INSET - THREAT_CHIP_R);
     anyArrow = false;
+    firstArrowId = -1;
     for (let i = 0; i < arrows.length; i++) {
       const a = arrows[i];
       a.show = false;
@@ -206,23 +347,18 @@ export function createOverlay(danger: DangerState, threats: readonly Threat[] = 
       const px = (p.prevPos.x + (p.pos.x - p.prevPos.x) * alpha - cam.x) * s + cx;
       const py = (p.prevPos.y + (p.pos.y - p.prevPos.y) * alpha - cam.y) * s + cy;
       if (px > -margin && px < w + margin && py > -margin && py < h + margin) continue;
-      // Where the line from the screen centre to the rival crosses the inset edge.
-      const dx = px - cx, dy = py - cy;
-      const k = Math.min(dx !== 0 ? hx / Math.abs(dx) : Infinity, dy !== 0 ? hy / Math.abs(dy) : Infinity);
+      // Where the line from the screen centre to the rival crosses the inset edge, slid
+      // clear of the HUD cards; the tip still points straight at the rival.
+      placeArrow(px - cx, py - cy, w, h, THREAT_EDGE_INSET + THREAT_CHIP_R, THREAT_AVOID_PAD, avoid, spot);
       a.show = true;
       a.player = p;
-      a.x = cx + dx * k;
-      a.y = cy + dy * k;
-      a.angle = Math.atan2(dy, dx);
+      a.x = spot.x;
+      a.y = spot.y;
+      a.angle = Math.atan2(py - spot.y, px - spot.x);
       a.label = DIST_LABELS[Math.min(DIST_LABELS.length - 1, Math.max(0, Math.round(t.dist)))];
       a.closest = !anyArrow; // the closest threat that has an arrow (threats are sorted)
+      if (!anyArrow) firstArrowId = t.id;
       anyArrow = true;
-      if (!tipDone) {
-        tipDone = true;
-        markTipSeen();
-        tipLeft = THREAT_TIP_S;
-        tipId = t.id;
-      }
     }
   }
 
@@ -280,25 +416,22 @@ export function createOverlay(danger: DangerState, threats: readonly Threat[] = 
       ctx.fillText(a.label, 0, face ? 9 : 0);
       ctx.restore();
     }
-    if (tipLeft > 0) drawTip(ctx, cam);
+    if (tipDraw) drawTip(ctx, cam);
   }
 
   /** "Rival heading for your trail": a white pill with a lip, beside the first arrow. */
   function drawTip(ctx: CanvasRenderingContext2D, cam: Camera): void {
     let a: Arrow | null = null;
-    for (const x of arrows) if (x.show && x.player?.id === tipId) a = x;
+    for (const x of arrows) if (x.show && x.player?.id === tip.id) a = x;
     if (!a) return;
     ctx.font = TIP_FONT;
     if (tipTextW === 0) tipTextW = ctx.measureText(THREAT_TIP_TEXT).width;
     const tw = tipTextW + TIP_PAD * 2;
-    // Toward the screen centre from the arrow, clear of the (possibly scaled) chip.
+    // Toward the screen centre from the arrow, clear of the (possibly scaled) chip and the HUD.
     const reach = THREAT_CHIP_R * THREAT_CLOSEST_SCALE + 10;
-    const ux = -Math.cos(a.angle), uy = -Math.sin(a.angle);
-    const ccx = a.x + ux * (reach + tw / 2), ccy = a.y + uy * (reach + TIP_H / 2);
-    const x = Math.max(EDGE_MARGIN, Math.min(cam.viewW - EDGE_MARGIN - tw, ccx - tw / 2));
-    const y = Math.max(EDGE_MARGIN, Math.min(cam.viewH - EDGE_MARGIN - TIP_H - LIP_PX, ccy - TIP_H / 2));
-    const shown = THREAT_TIP_S - tipLeft;
-    const fade = Math.min(1, shown / 0.2, tipLeft / 0.3);
+    placeTip(a.x, a.y, a.angle, tw, TIP_H + LIP_PX, cam.viewW, cam.viewH, EDGE_MARGIN, reach, avoid, spot);
+    const x = spot.x, y = spot.y;
+    const fade = Math.min(1, (THREAT_TIP_S - tip.left) / 0.2, tip.left / 0.3);
     ctx.save();
     ctx.globalAlpha = fade;
     pill(ctx, x, y + LIP_PX, tw, TIP_H);

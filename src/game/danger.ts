@@ -25,10 +25,13 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 type FlagStore = { getItem(key: string): string | null };
 
-/** The "danger warnings" setting (Task 7 adds its toggle). On when storage is unavailable. */
-export function dangerWarningsEnabled(store: FlagStore | undefined = globalThis.localStorage): boolean {
+/**
+ * The "danger warnings" setting (Task 7 adds its toggle). On when storage is unavailable;
+ * storage is looked up inside the try, since touching blocked localStorage throws.
+ */
+export function dangerWarningsEnabled(store?: FlagStore): boolean {
   try {
-    return store?.getItem(DANGER_WARNINGS_KEY) !== '0';
+    return (store ?? globalThis.localStorage)?.getItem(DANGER_WARNINGS_KEY) !== '0';
   } catch {
     return true;
   }

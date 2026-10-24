@@ -280,6 +280,8 @@ export type Screens = {
   minimap: HTMLCanvasElement;
   /** The in-game HUD; its pause button calls onPause. */
   showHud(onPause: () => void): void;
+  /** Screen rects (CSS px) of the visible HUD corner cards, for the canvas overlay to avoid. */
+  hudRects(): { x: number; y: number; w: number; h: number }[];
   /** Pause menu over the frozen game. */
   showPause(handlers: PauseHandlers): void;
   hidePause(): void;
@@ -1029,6 +1031,15 @@ export function createScreens(root: HTMLElement): Screens {
       only(skins.root);
       setTab('skins', onTab);
       skins.focus();
+    },
+    hudRects() {
+      const out: { x: number; y: number; w: number; h: number }[] = [];
+      for (const e of [area, pauseBtn, boardBox, minimapWrap]) {
+        if (e.hidden || hud.hidden) continue;
+        const r = e.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) out.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+      }
+      return out;
     },
     showHud(onPause) {
       for (const r of rowEls) { r.root.hidden = true; r.key = ''; }
