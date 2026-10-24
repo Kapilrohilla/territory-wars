@@ -74,6 +74,44 @@ describe('placeArrow', () => {
     placeArrow(1, 1, W, H, INSET, PAD, [a, b], out);
     expect(inside(out.x, out.y, a, PAD) || inside(out.x, out.y, b, PAD)).toBe(false);
   });
+
+  describe('375×667 phone: the whole top edge sits under HUD cards', () => {
+    const W2 = 375, H2 = 667, PAD2 = 25;
+    // Area card top-left, pause button under it, leaderboard top-right (≤560px layout).
+    const area = rect(12, 12, 169, 100), pause = rect(12, 124, 48, 48), board = rect(193, 12, 170, 180);
+    const hud = [area, pause, board];
+    const clear = (x: number, y: number) => hud.every((r) => !inside(x, y, r, PAD2));
+
+    it('every top-edge spot is blocked (the old code stayed put under a card)', () => {
+      for (let x = INSET; x <= W2 - INSET; x += 1) expect(clear(x, INSET)).toBe(false);
+    });
+
+    it('a ray just right of up moves to the right edge, just below the leaderboard', () => {
+      placeArrow(0.2, -1, W2, H2, INSET, PAD2, hud, out);
+      expect(clear(out.x, out.y)).toBe(true);
+      expect(out.x).toBeCloseTo(W2 - INSET, 9);
+      expect(out.y).toBeCloseTo(12 + 180 + PAD2, 9);
+    });
+
+    it('a ray just left of up moves to the left edge, below the area card and pause button', () => {
+      placeArrow(-0.3, -1, W2, H2, INSET, PAD2, hud, out);
+      expect(clear(out.x, out.y)).toBe(true);
+      expect(out.x).toBeCloseTo(INSET, 9);
+      expect(out.y).toBeCloseTo(124 + 48 + PAD2, 9);
+    });
+
+    it('stays inside the viewport and clear for every upward ray within ±40° of up', () => {
+      for (let deg = -40; deg <= 40; deg += 2) {
+        const a = (deg * Math.PI) / 180;
+        placeArrow(Math.sin(a), -Math.cos(a), W2, H2, INSET, PAD2, hud, out);
+        expect(clear(out.x, out.y)).toBe(true);
+        expect(out.x).toBeGreaterThanOrEqual(INSET - 1e-9);
+        expect(out.x).toBeLessThanOrEqual(W2 - INSET + 1e-9);
+        expect(out.y).toBeGreaterThanOrEqual(INSET - 1e-9);
+        expect(out.y).toBeLessThanOrEqual(H2 - INSET + 1e-9);
+      }
+    });
+  });
 });
 
 describe('placeTip', () => {

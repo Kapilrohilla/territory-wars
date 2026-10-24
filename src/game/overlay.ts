@@ -225,10 +225,32 @@ const clearOf = (x: number, y: number, avoid: readonly Rect[], pad: number) => {
 };
 
 /**
+ * Nearest spot to `at` along one inset edge (vertical: the x = fixed edge, sliding in y;
+ * else the y = fixed edge, sliding in x) that is clear of every rect, or NaN when there is
+ * none in [lo, hi]. Candidates are the sides of each rect, grown by pad.
+ */
+function slideClear(vertical: boolean, fixed: number, at: number, lo: number, hi: number,
+  avoid: readonly Rect[], pad: number): number {
+  let best = Infinity, bestAt = NaN;
+  for (const r of avoid) {
+    for (let side = 0; side < 2; side++) {
+      const c = vertical ? (side ? r.y + r.h + pad : r.y - pad) : (side ? r.x + r.w + pad : r.x - pad);
+      if (c < lo || c > hi || Math.abs(c - at) >= best) continue;
+      if (!clearOf(vertical ? fixed : c, vertical ? c : fixed, avoid, pad)) continue;
+      best = Math.abs(c - at);
+      bestAt = c;
+    }
+  }
+  return bestAt;
+}
+
+/**
  * Where an edge arrow goes (its centre, written to out): where the ray from the viewport
  * centre along (dx, dy) crosses the viewport inset by `inset`. If that falls within `pad` of
  * an avoid rect, it slides along that edge to the nearest spot clear of every rect (still
- * inside the inset edge); with no such spot it stays put.
+ * inside the inset edge). With no such spot (a narrow top edge full of HUD cards) it moves
+ * to the side edge on the ray's side, as near that corner as is clear; failing that too it
+ * stays put.
  */
 export function placeArrow(dx: number, dy: number, viewW: number, viewH: number, inset: number, pad: number,
   avoid: readonly Rect[], out: { x: number; y: number }): { x: number; y: number } {
@@ -241,23 +263,23 @@ export function placeArrow(dx: number, dy: number, viewW: number, viewH: number,
   out.x = x;
   out.y = y;
   if (avoid.length === 0 || clearOf(x, y, avoid, pad)) return out;
-  // Left/right edge: slide in y; top/bottom edge: slide in x. Candidates are the sides of
-  // each rect (grown by pad); the nearest one inside the edge and clear of all rects wins.
+  // Left/right edge: slide in y; top/bottom edge: slide in x.
   const vertical = kx <= ky;
-  const at = vertical ? y : x;
-  const lo = vertical ? cy - halfH : cx - halfW, hi = vertical ? cy + halfH : cx + halfW;
-  let best = Infinity, bestAt = at;
-  for (const r of avoid) {
-    for (let side = 0; side < 2; side++) {
-      const c = vertical ? (side ? r.y + r.h + pad : r.y - pad) : (side ? r.x + r.w + pad : r.x - pad);
-      if (c < lo || c > hi || Math.abs(c - at) >= best) continue;
-      if (!clearOf(vertical ? x : c, vertical ? c : y, avoid, pad)) continue;
-      best = Math.abs(c - at);
-      bestAt = c;
-    }
+  const x0 = cx - halfW, x1 = cx + halfW, y0 = cy - halfH, y1 = cy + halfH;
+  const at = slideClear(vertical, vertical ? x : y, vertical ? y : x, vertical ? y0 : x0, vertical ? y1 : x1, avoid, pad);
+  if (!Number.isNaN(at)) {
+    if (vertical) out.y = at;
+    else out.x = at;
+    return out;
   }
-  if (vertical) out.y = bestAt;
-  else out.x = bestAt;
+  // The other edge through the corner on the ray's side, starting from that corner.
+  const sideX = dx < 0 ? x0 : x1, sideY = dy < 0 ? y0 : y1;
+  const alt = vertical
+    ? slideClear(false, sideY, sideX, x0, x1, avoid, pad)
+    : slideClear(true, sideX, sideY, y0, y1, avoid, pad);
+  if (Number.isNaN(alt)) return out;
+  out.x = vertical ? alt : sideX;
+  out.y = vertical ? sideY : alt;
   return out;
 }
 
