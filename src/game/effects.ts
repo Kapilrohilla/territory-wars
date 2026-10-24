@@ -79,22 +79,26 @@ type Chunk = {
   size: number; color: string; t: number; life: number;
 };
 
+/** A rival's land as it was before a capture took part of it (drawn clipped to the region). */
+type Under = { colorIndex: number; land: MultiPoly };
+
 /**
- * Land rising into place; `fromColorIndex` is a victim's colour it flips from (taken land).
+ * Land rising into place; `fromColorIndex` is a victim's colour it flips from (taken land),
+ * `under` the rivals' land a capture stole from (only the part inside the region shows).
  * With a `wave`, it fills outward from (ox, oy) over waveS seconds to cover maxDist; without
  * one (a spawn's land) it fades in everywhere at once. `life` is how long it stays.
  */
 type CaptureFx = {
   playerId: number; colorIndex: number; region: MultiPoly; t: number; fromColorIndex?: number;
-  wave: boolean; ox: number; oy: number; waveS: number; maxDist: number; life: number;
+  under?: Under[]; wave: boolean; ox: number; oy: number; waveS: number; maxDist: number; life: number;
 };
 
 /** A capture fading in; with `origin`, as a wave spreading from it (see waves.ts). */
 function captureFx(playerId: number, colorIndex: number, region: MultiPoly, origin: Vec | null,
-  fromColorIndex?: number): CaptureFx {
+  fromColorIndex?: number, under?: Under[]): CaptureFx {
   const waveS = origin ? waveSeconds(landArea(region)) : 0;
   return {
-    playerId, colorIndex, region, t: 0, fromColorIndex,
+    playerId, colorIndex, region, t: 0, fromColorIndex, under,
     wave: origin !== null, ox: origin?.x ?? 0, oy: origin?.y ?? 0, waveS,
     maxDist: origin ? maxDistFrom(region, origin) : 0,
     life: Math.max(CAPTURE_S, waveS),
@@ -223,10 +227,19 @@ function fillShape(ctx: CanvasRenderingContext2D, m: MultiPoly, colorIndex: numb
   ctx.restore();
 }
 
+/** The rivals' land a capture stole, clipped to its region, at `alpha`. */
+function drawUnder(ctx: CanvasRenderingContext2D, c: CaptureFx, alpha: number): void {
+  if (!c.under) return;
+  ctx.save();
+  ctx.clip(landPath(c.region), 'evenodd');
+  for (const u of c.under) fillShape(ctx, u.land, u.colorIndex, playerColors(u.colorIndex).base, 0, 1, alpha);
+  ctx.restore();
+}
+
 /**
- * A capture mid-wave: unreached land shows what was there (pale arena, or the victim's land
- * for an absorb); inside the front's circle it is the owner's, rising with the usual lip.
- * Ripple rings ride just behind the front, clipped to the region.
+ * A capture mid-wave: unreached land shows what was there (pale arena, the land stolen from
+ * rivals, or the victim's land for an absorb); inside the front's circle it is the owner's,
+ * rising with the usual lip. Ripple rings ride just behind the front, clipped to the region.
  */
 function drawWave(ctx: CanvasRenderingContext2D, c: CaptureFx, rise: number, bright: number): void {
   const r = waveRadius(c.t, c.waveS, c.maxDist);
@@ -238,6 +251,7 @@ function drawWave(ctx: CanvasRenderingContext2D, c: CaptureFx, rise: number, bri
       ctx.globalAlpha = 1;
       ctx.fillStyle = PALETTE.arena;
       ctx.fill(landPath(c.region), 'evenodd');
+      drawUnder(ctx, c, 1);
     }
   }
   ctx.save();
@@ -321,6 +335,14 @@ export function createEffects(): Effects {
   };
   /** The burn each player had when last seen, so a burn sparks once. */
   const seenBurn: (Burn | null)[] = [];
+  /**
+   * Each player's land as of the last look (after the previous step's events, or the last
+   * frame): a capture's `stolen` rivals have already lost the region when its event arrives.
+   */
+  const lastLand: MultiPoly[] = [];
+  const snapLands = (world: World) => {
+    for (const p of world.players) lastLand[p.id] = p.land;
+  };
 
   const spawnBurst = (at: Vec) => {
     sparkVelocities(SPARK_COUNT, SPARK_SPEED, Math.random, burst);
@@ -375,8 +397,14 @@ export function createEffects(): Effects {
         if (e.type === 'capture') {
           const p = world.players[e.playerId];
           if (e.region.length > 0) {
-            // The loop closed where the head is now: the wave starts there.
-            captures.push(captureFx(p.id, p.colorIndex, e.region, p.pos));
+            // The loop closed where the head is now: the wave starts there. Unreached stolen
+            // land keeps its old owner's colour until the wave gets to it.
+            let under: Under[] | undefined;
+            for (const st of e.stolen) {
+              const v = world.players[st.playerId], land = lastLand[st.playerId];
+              if (v && land && land.length) (under ??= []).push({ colorIndex: v.colorIndex, land });
+            }
+            captures.push(captureFx(p.id, p.colorIndex, e.region, p.pos, undefined, under));
             spawnChunks(p.pos, ENTER_CHUNKS, ENTER_CHUNK_SPEED, ENTER_CHUNK_S, 0.35, playerColors(p.colorIndex).lip);
           }
           if (p.isHuman && e.gainedPct > 0) {
@@ -409,9 +437,11 @@ export function createEffects(): Effects {
           captures = captures.filter((c) => c.playerId !== p.id);
         }
       }
+      snapLands(world);
     },
 
     observe(world) {
+      snapLands(world);
       for (const p of world.players) {
         if (p.burn !== (seenBurn[p.id] ?? null)) checkBurn(world, p.id);
         if (p.alive && (popLife[p.id] ?? -1) !== p.deaths) {
@@ -529,6 +559,7 @@ export function createEffects(): Effects {
           const from = playerColors(c.fromColorIndex);
           fillShape(ctx, c.region, c.fromColorIndex, from.base, 0, 1, 1 - bright);
         }
+        drawUnder(ctx, c, 1 - bright);
         fillShape(ctx, c.region, c.colorIndex, playerShade(c.colorIndex, bright), CAPTURE_DEPTH * (1 - rise), rise,
           clamp01(c.t / CAPTURE_APPEAR_S));
       }

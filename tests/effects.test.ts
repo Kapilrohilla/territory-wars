@@ -4,7 +4,8 @@ import {
 } from '../src/game/effects';
 import { createWorld } from '../src/sim/world';
 import { circleRing, type MultiPoly } from '../src/sim/geometry';
-import { playerShade } from '../src/game/palette';
+import { PALETTE, playerShade } from '../src/game/palette';
+import { landPath, playerColors } from '../src/game/render';
 
 const square = (x: number, y: number, s: number): MultiPoly => [[[
   { x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s },
@@ -102,6 +103,41 @@ describe('createEffects', () => {
     fx.update(1.3);
     expect(fx.landMask(world.humanId)).toBeUndefined();
     expect(fx.busy()).toBe(false);
+  });
+
+  it('a capture that steals shows the victim\'s old land (not blank arena) until the wave reaches it', () => {
+    const g = globalThis as unknown as { Path2D?: unknown };
+    const saved = g.Path2D;
+    g.Path2D = class { moveTo() {} lineTo() {} quadraticCurveTo() {} closePath() {} };
+    try {
+      const world = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+      const victim = world.players[2];
+      const before = square(10, 10, 4);
+      victim.land = before;
+      const fx = createEffects();
+      fx.observe(world);
+      fx.update(5); // let the spawn pops settle
+      // The step: the human's loop takes the square's left half from the victim.
+      victim.land = square(12, 10, 2);
+      const region = square(8, 10, 4);
+      world.players[world.humanId].pos = { x: 8, y: 10 };
+      fx.onEvents([{ type: 'capture', playerId: world.humanId, gainedPct: 0.5, region, stolen: [{ playerId: 2, pct: 0.2 }] }],
+        world, { nudge: () => {} });
+      fx.update(0.01); // mid-wave
+      const fills: { style: unknown; path: unknown }[] = [];
+      const ctx = {
+        globalAlpha: 1, fillStyle: '' as unknown,
+        save() {}, restore() {}, translate() {}, beginPath() {}, arc() {}, clip() {}, stroke() {},
+        fill(path: unknown) { fills.push({ style: this.fillStyle, path }); },
+      };
+      fx.drawWorld(ctx as unknown as CanvasRenderingContext2D);
+      const arena = fills.findIndex((f) => f.style === PALETTE.arena && f.path === landPath(region));
+      const old = fills.findIndex((f) => f.style === playerColors(victim.colorIndex).base && f.path === landPath(before));
+      expect(arena).toBeGreaterThanOrEqual(0);
+      expect(old).toBeGreaterThan(arena); // painted over the blank region
+    } finally {
+      g.Path2D = saved;
+    }
   });
 
   it('a kill by the human pops an escalating callout and a stronger nudge', () => {
