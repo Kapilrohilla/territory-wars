@@ -79,6 +79,11 @@ describe('downTimeScale', () => {
     expect(downTimeScale(null)).toBe(1);
   });
 
+  it('is gated: with freeze-frames off (or reduce motion on) the down window runs at full speed', () => {
+    for (const t of [0, 100, 300, 599]) expect(downTimeScale(t, false)).toBe(1);
+    expect(downTimeScale(300, true)).toBeCloseTo(DOWN_SLOW_SCALE, 9);
+  });
+
   it('effects run at 25% during a hit-stop', () => {
     expect(HITSTOP_SCALE).toBe(0.25);
   });

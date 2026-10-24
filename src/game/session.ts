@@ -229,6 +229,8 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   // Knocked out: the world is frozen behind the revive offer; rendering goes on.
   let downAt: number | null = null;
   let downNotified = false;
+  /** The down slow-mo's gate (impact setting and reduce motion), cached when the down starts. */
+  let downSlowOn = false;
   let reviveRequested = false;
   /** The settled frozen frame has been painted; later frames skip painting until unfrozen. */
   let frozenPainted = false;
@@ -251,9 +253,12 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     // Once over (or frozen), nothing steps: pin interpolation so survivors don't wobble.
     const a = world.over || world.awaitingRevive ? 1 : alpha;
     lastAlpha = a;
-    if (world.awaitingRevive && downAt === null) downAt = now;
+    if (world.awaitingRevive && downAt === null) {
+      downAt = now;
+      downSlowOn = impactOn(); // read once on the down edge, not per frame
+    }
     // Slow-mo through the down (before the revive offer); effects crawl during a hit-stop.
-    const slow = downNotified || downAt === null ? 1 : downTimeScale(now - downAt);
+    const slow = downNotified || downAt === null ? 1 : downTimeScale(now - downAt, downSlowOn);
     const fxScale = hitStop.shouldStep(now) ? slow : Math.min(slow, HITSTOP_SCALE);
     effects.update(dt * fxScale);
     if (now - hudRectsAt >= HUD_RECTS_MS) refreshHudRects();
@@ -311,12 +316,14 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     pause() {
       if (disposed || paused || !running || world.over || world.awaitingRevive) return false;
       paused = true;
+      hitStop.clear();
       stop();
       return true;
     },
     resume() {
       if (disposed || !paused) return;
       paused = false;
+      hitStop.clear();
       running = true;
       lastFrame = null;
       loop.start();
@@ -337,6 +344,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     dispose() {
       if (disposed) return;
       disposed = true;
+      hitStop.clear();
       stop();
       tension.dispose();
       window.removeEventListener('resize', resize);

@@ -58,9 +58,11 @@ export function createHitStop(): HitStop {
 /**
  * Effects/camera time scale `msSinceDown` ms after the human went down (null: not down):
  * eases from 1 to DOWN_SLOW_SCALE, holds until the revive offer, then back to full speed.
+ * Part of the freeze-frame family: with `enabled` false (the impact setting off or reduce
+ * motion on) it is always 1.
  */
-export function downTimeScale(msSinceDown: number | null): number {
-  if (msSinceDown === null || msSinceDown < 0 || msSinceDown >= DOWN_DELAY_MS) return 1;
+export function downTimeScale(msSinceDown: number | null, enabled = true): number {
+  if (!enabled || msSinceDown === null || msSinceDown < 0 || msSinceDown >= DOWN_DELAY_MS) return 1;
   const u = Math.min(1, msSinceDown / DOWN_EASE_MS);
   const e = 1 - (1 - u) * (1 - u) * (1 - u); // ease-out cubic
   return 1 + (DOWN_SLOW_SCALE - 1) * e;
