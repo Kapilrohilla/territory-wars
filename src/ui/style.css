@@ -977,7 +977,8 @@ button:focus-visible,
 .tw-row-pct { flex: none; font-weight: 700; }
 .tw-leader { font-weight: 800; }
 .tw-you { background: var(--periwinkle-tint); font-family: var(--font-display); font-weight: 800; }
-/* Overtake: your row glows periwinkle for 1.2 s with a green "▲N"; a white toast pill sits under the board. */
+/* Overtake: your row glows periwinkle for 1.2 s with a green "▲N"; a white toast pill sits under the board
+   (over its top on ≤560px). */
 .tw-up-glow { animation: tw-up-glow 1200ms ease-out; }
 @keyframes tw-up-glow {
   0%, 60% { box-shadow: 0 0 0 3px rgba(141, 170, 236, 0.75), 0 0 14px 4px rgba(141, 170, 236, 0.6); }
@@ -1026,6 +1027,8 @@ button:focus-visible,
   visibility: visible;
   transition: opacity 200ms ease-out, visibility 0s;
 }
+/* Neither pill on (set after the fade-out): their row takes no height. */
+.tw-pills-off > .tw-burn-pill, .tw-pills-off > .tw-danger-pill { display: none; }
 .tw-burn-pill {
   display: inline-flex;
   align-items: center;
@@ -1042,7 +1045,8 @@ button:focus-visible,
 }
 .tw-burn-pill.tw-on { animation: tw-pulse 900ms ease-in-out infinite alternate; }
 .tw-burn-pill .tw-icon { width: 20px; height: 20px; color: var(--ember); }
-/* Milestone ribbon: gold with a lip, ink text; slides in and out (WAAPI) with confetti specks. */
+/* Milestone ribbon: gold with a lip, ink text; slides in and out (WAAPI) with confetti specks.
+   It shares a cell with the knockout banner; the HUD shows one at a time. */
 .tw-ribbon {
   grid-area: 2 / 1;
   position: relative;
@@ -1077,7 +1081,7 @@ button:focus-visible,
 
 /* Knockout banner: chunky gold pill with a lip, Rubik 900 ink; a white "×N STREAK" chip in a streak. */
 .tw-ko {
-  grid-area: 3 / 1;
+  grid-area: 2 / 1;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1491,7 +1495,31 @@ button:focus-visible,
   }
   .tw-area.tw-burning ~ .tw-pause-btn { top: calc(var(--hud-top) + 140px); }
   .tw-alerts { top: calc(var(--hud-top) + 196px); }
+  /* The overtake toast overlays the board's top (header, first row) instead of hanging
+     under it, where it would reach the alerts; long names wrap to a second line. */
+  .tw-toast {
+    top: 4px;
+    left: 4px;
+    right: 4px;
+    margin-top: 0;
+    justify-content: center;
+    padding: 6px 10px;
+    border-radius: 16px;
+    font-size: 13px;
+    line-height: 1.2;
+    text-align: center;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 @media (max-width: 420px) {
   .tw-pause-btn { width: 48px; height: 48px; }
+}
+/* Short narrow phones (360×640): the head sits ~320px down; with a pill on, a full-size
+   knockout banner under it would reach the head, so the banner and ribbon shrink. */
+@media (max-width: 560px) and (max-height: 700px) {
+  .tw-ribbon, .tw-ko { margin-top: 6px; }
+  .tw-ko .tw-ko-pill { padding: 6px 16px; font-size: 18px; }
+  .tw-ko-chip { padding: 4px 10px 4px 7px; font-size: 13px; }
+  .tw-ribbon { padding: 6px 16px; font-size: 16px; }
 }

@@ -417,6 +417,8 @@ const UP_BADGE_MS = 1200;
 const TOAST_MS = 1600;
 const TOAST_GAP_MS = 1500;
 const RIBBON_SPECKS = 14;
+/** The alert pills fade out in 300 ms (.tw-on in style.css). */
+const PILL_FADE_OUT_MS = 300;
 const SPECK_MS = 900;
 const SPECK_COLORS = ['#FFC93C', '#FF7A59', '#8DAAEC', '#2ED47A', '#F48FB1', '#C99A1E'];
 
@@ -820,7 +822,8 @@ export function createScreens(root: HTMLElement): Screens {
     board.append(r);
     rowEls.push({ root: r, rank, swatch, name, pct: p, key: '', id: -1 });
   }
-  // Overtake reactions: a green "▲N" badge on your row, and a white toast pill under the board.
+  // Overtake reactions: a green "▲N" badge on your row, and a white toast pill under the board
+  // (over its top on ≤560px, see style.css).
   const upBadge = el('span', 'tw-up');
   upBadge.hidden = true;
   const toast = el('div', 'tw-toast');
@@ -875,7 +878,9 @@ export function createScreens(root: HTMLElement): Screens {
   const segs: HTMLElement[] = [];
   for (let i = 0; i < 3; i++) { const sg = el('span', 'tw-danger-seg'); segs.push(sg); meter.append(sg); }
   dangerPill.append(heart, el('span', undefined, 'Far from home'), meter);
-  // Milestone ribbon: gold, under the alert pills, with a small pool of confetti specks.
+  // Milestone ribbon: gold, under the alert pills, with a small pool of confetti specks. It
+  // shares one spot with the knockout banner, one at a time: a ribbon due while the banner
+  // shows waits for it (kills often pass a milestone in the same step).
   const ribbon = el('div', 'tw-ribbon'); // announced by the alerts' status role
   const ribbonText = el('span', 'tw-ribbon-text');
   ribbon.append(icon('star'), ribbonText, icon('star'));
@@ -898,6 +903,8 @@ export function createScreens(root: HTMLElement): Screens {
   alerts.append(dangerPill, burnPill, ribbon, ko);
   let koTimer: ReturnType<typeof setTimeout> | null = null;
   let koAnim: Animation | null = null;
+  /** Milestone tier waiting for the knockout banner to go, or -1. */
+  let ribbonQueued = -1;
   const hideKo = () => {
     if (koTimer !== null) clearTimeout(koTimer);
     koTimer = null;
@@ -905,26 +912,42 @@ export function createScreens(root: HTMLElement): Screens {
     koAnim = null;
     ko.hidden = true;
   };
+  const endKo = () => {
+    hideKo();
+    const tier = ribbonQueued;
+    ribbonQueued = -1;
+    if (tier >= 0) playRibbon(tier);
+  };
   const playKo = (streak: number) => {
     hideKo();
+    // A ribbon on show steps aside and comes back (from the start) after the banner.
+    if (ribbonTimer !== null) {
+      const tier = ribbonTier;
+      hideRibbon();
+      ribbonQueued = tier;
+    }
     const chip = streakChipText(streak + 1);
     koChip.hidden = chip === null;
     if (chip !== null) setText(koChipText, chip);
     ko.hidden = false;
     const still = reduceMotion() || typeof ko.animate !== 'function';
     if (!still) koAnim = ko.animate(KO_KEYS, { duration: KO_MS, easing: 'ease-out' });
-    koTimer = setTimeout(hideKo, KO_MS);
+    koTimer = setTimeout(endKo, KO_MS);
   };
   let ribbonTimer: ReturnType<typeof setTimeout> | null = null;
   let ribbonDelay: ReturnType<typeof setTimeout> | null = null;
+  let ribbonTier = 0;
   const hideRibbon = () => {
     if (ribbonTimer !== null) clearTimeout(ribbonTimer);
     if (ribbonDelay !== null) clearTimeout(ribbonDelay);
     ribbonTimer = ribbonDelay = null;
+    ribbonQueued = -1;
     ribbon.hidden = true;
   };
   const playRibbon = (tier: number) => {
     ribbonDelay = null;
+    if (!ko.hidden) { ribbonQueued = tier; return; }
+    ribbonTier = tier;
     setText(ribbonText, milestoneRibbonText(tier));
     ribbon.hidden = false;
     const still = reduceMotion() || typeof ribbon.animate !== 'function';
@@ -952,10 +975,23 @@ export function createScreens(root: HTMLElement): Screens {
   };
   /** Last written HUD alert state, so the DOM is touched only on change. */
   let shownBurn = false, shownDanger = false, shownSegs = -1, shownBeat = -1;
+  // With neither pill on, their row collapses once the fade-out is done (.tw-pills-off), so
+  // the ribbon / knockout banner sit right under the HUD cards, clear of the player's head.
+  let pillsOffTimer: ReturnType<typeof setTimeout> | null = null;
+  const syncPillRow = () => {
+    if (pillsOffTimer !== null) clearTimeout(pillsOffTimer);
+    pillsOffTimer = null;
+    if (shownBurn || shownDanger) alerts.classList.remove('tw-pills-off');
+    else if (reduceMotion()) alerts.classList.add('tw-pills-off');
+    else pillsOffTimer = setTimeout(() => { pillsOffTimer = null; alerts.classList.add('tw-pills-off'); }, PILL_FADE_OUT_MS);
+  };
+  alerts.classList.add('tw-pills-off');
   const setAlerts = (burning: boolean, danger: number) => {
     const showDanger = !burning && danger >= DANGER_SHOW;
+    const wasOn = shownBurn || shownDanger;
     if (burning !== shownBurn) { shownBurn = burning; burnPill.classList.toggle('tw-on', burning); }
     if (showDanger !== shownDanger) { shownDanger = showDanger; dangerPill.classList.toggle('tw-on', showDanger); }
+    if (wasOn !== (shownBurn || shownDanger)) syncPillRow();
     if (!showDanger) return; // keep the last meter while it fades out
     const n = dangerSegments(danger);
     if (n !== shownSegs) { shownSegs = n; segs.forEach((sg, i) => sg.classList.toggle('tw-lit', i < n)); }
@@ -1399,7 +1435,8 @@ export function createScreens(root: HTMLElement): Screens {
       burnTag.hidden = !a.burning;
       setAlerts(a.burning, danger);
       area.classList.toggle('tw-burning', a.burning);
-      shieldToast.hidden = !a.shielded;
+      // The shield toast sits where the ribbon / knockout banner show on short phones.
+      shieldToast.hidden = !a.shielded || !ko.hidden || !ribbon.hidden;
       steerHint.classList.toggle('tw-gone', steerBubbleRound || world.time > HINT_SECONDS);
       const all = buildLeaderboard(boardEntries(world), Infinity);
       const rows = all.slice(0, 5);
