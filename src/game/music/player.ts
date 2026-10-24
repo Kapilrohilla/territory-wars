@@ -34,6 +34,19 @@ const DOWN_S = 0.8;
 const DOWN_CUTOFF = 200;
 const REVIVE_FADE_S = 0.5;
 
+/** Cancels automation after `now`, keeping the param at its current value (mid-ramp included). */
+function hold(p: AudioParam, now: number): void {
+  if (typeof p.cancelAndHoldAtTime === 'function') p.cancelAndHoldAtTime(now);
+  else {
+    const v = p.value;
+    p.cancelScheduledValues(now);
+    p.setValueAtTime(v, now);
+  }
+}
+
+/** A cutoff change smaller than this fraction isn't worth a new automation event. */
+const RETARGET_FRAC = 0.02;
+
 /** Lowpass cutoff for a mood: opens fully when safe, closes with danger, tight while burning. */
 export function cutoffFor(m: MusicMood): number {
   if (m.tier === 3) return 1200;
@@ -73,6 +86,8 @@ export function createMusicPlayer(opts: {
   /** Context time of step 0; moved forward after a pause or a stall so bars never pile up. */
   let t0 = 0;
   let nextBar = 0;
+  /** The cutoff (and tier) the filter was last aimed at, so per-frame setMood calls stay cheap. */
+  let aimed = { cutoff: 0, tier: -1 };
 
   const barStart = (i: number) => t0 + i * barS;
   const stepTime = (step: number) => t0 + step * stepS;
@@ -107,6 +122,7 @@ export function createMusicPlayer(opts: {
     filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
     filter.frequency.value = cutoffFor(mood);
+    aimed = { cutoff: cutoffFor(mood), tier: mood.tier };
     filter.Q.value = 0.7;
     filter.connect(out);
     out.connect(bus);
@@ -140,11 +156,9 @@ export function createMusicPlayer(opts: {
   /** Down: the music winds down like a stopping tape. */
   function tapeStop(now: number): void {
     if (!c || !out || !filter) return;
-    out.gain.cancelScheduledValues(now);
-    out.gain.setValueAtTime(out.gain.value, now);
+    hold(out.gain, now);
     out.gain.linearRampToValueAtTime(0, now + DOWN_S);
-    filter.frequency.cancelScheduledValues(now);
-    filter.frequency.setValueAtTime(filter.frequency.value, now);
+    hold(filter.frequency, now);
     filter.frequency.exponentialRampToValueAtTime(DOWN_CUTOFF, now + DOWN_S);
     // One low saw sliding down, straight to the bus so the fade above doesn't swallow it.
     const bus = getBus();
@@ -168,14 +182,17 @@ export function createMusicPlayer(opts: {
     o.onended = () => { o.disconnect(); lp.disconnect(); g.disconnect(); };
   }
 
-  /** Revive: fade back in from the next bar. */
+  /** Fades the music back in over `s` from time `at` (revive: the next bar; resume: now or the next bar).
+   * Holds whatever a running fade has reached rather than jumping back to its start. */
   function fadeIn(at: number, s: number): void {
     if (!c || !out || !filter) return;
-    out.gain.cancelScheduledValues(c.currentTime);
-    out.gain.setValueAtTime(0, at);
-    out.gain.linearRampToValueAtTime(1, at + s);
-    filter.frequency.cancelScheduledValues(c.currentTime);
-    filter.frequency.setTargetAtTime(cutoffFor(mood), at, FILTER_TC);
+    const now = c.currentTime;
+    hold(out.gain, now);
+    out.gain.linearRampToValueAtTime(0, Math.max(now, at));
+    out.gain.linearRampToValueAtTime(1, Math.max(now, at) + s);
+    hold(filter.frequency, now);
+    filter.frequency.setTargetAtTime(cutoffFor(mood), Math.max(now, at), FILTER_TC);
+    aimed = { cutoff: cutoffFor(mood), tier: mood.tier };
   }
 
   return {
@@ -194,8 +211,7 @@ export function createMusicPlayer(opts: {
       stopTimer();
       if (c && out) {
         const now = c.currentTime;
-        out.gain.cancelScheduledValues(now);
-        out.gain.setValueAtTime(out.gain.value, now);
+        hold(out.gain, now);
         out.gain.linearRampToValueAtTime(0, now + PAUSE_FADE_S);
       }
     },
@@ -204,8 +220,12 @@ export function createMusicPlayer(opts: {
       if (!started || !paused || disposed) return;
       paused = false;
       if (c && out) {
-        anchor(c.currentTime);
-        if (composer.state === 'playing') fadeIn(barStart(nextBar), LEAD_S);
+        // The rest of the bar playing when we paused is still queued: keep the grid unless the next
+        // bar's start has already slipped by, so the next bar never lands on top of those notes.
+        const now = c.currentTime;
+        const late = barStart(nextBar) < now + LEAD_S;
+        if (late) anchor(now);
+        if (composer.state === 'playing') fadeIn(late ? barStart(nextBar) : now, LEAD_S);
       }
       tick();
     },
@@ -226,10 +246,14 @@ export function createMusicPlayer(opts: {
       mood = { tier: m.tier, danger: m.danger };
       composer.setMood(mood);
       if (!c || !filter || paused || disposed || composer.state !== 'playing') return;
-      filter.frequency.setTargetAtTime(cutoffFor(mood), c.currentTime, FILTER_TC);
+      const cutoff = cutoffFor(mood);
+      if (mood.tier === aimed.tier && Math.abs(cutoff - aimed.cutoff) <= aimed.cutoff * RETARGET_FRAC) return;
+      aimed = { cutoff, tier: mood.tier };
+      filter.frequency.setTargetAtTime(cutoff, c.currentTime, FILTER_TC);
     },
 
     events(list) {
+      // Dropped while paused: the game sim is frozen then, so no real cues arrive.
       if (!started || paused || disposed || composer.state === 'ended' || list.length === 0) return;
       const before = composer.state;
       const now = c?.currentTime ?? 0;

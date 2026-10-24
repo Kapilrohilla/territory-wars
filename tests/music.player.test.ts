@@ -15,12 +15,14 @@ class FakeParam {
   exponentialRampToValueAtTime(v: number, t: number) { this.calls.push({ kind: 'exp', v, t }); }
   setTargetAtTime(v: number, t: number) { this.calls.push({ kind: 'target', v, t }); }
   cancelScheduledValues(t: number) { this.calls.push({ kind: 'cancel', v: 0, t }); }
+  cancelAndHoldAtTime(t: number) { this.calls.push({ kind: 'hold', v: 0, t }); }
 }
 class FakeNode {
   disconnected = false;
   /** Set when this node drives an AudioParam (a modulator, not part of the audio path). */
   modulates = false;
-  connect(to?: unknown) { if (to instanceof FakeParam) this.modulates = true; }
+  targets: unknown[] = [];
+  connect(to?: unknown) { if (to instanceof FakeParam) this.modulates = true; this.targets.push(to); }
   disconnect() { this.disconnected = true; }
 }
 class FakeSource extends FakeNode {
@@ -215,6 +217,73 @@ describe('music player', () => {
     expect(lp.calls.some((c) => c.kind === 'set' || c.kind === 'lin')).toBe(false);
   });
 
+  it('identical_moods_add_no_automation', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(0, ctx);
+    const lp = ctx.filters[0].frequency;
+    const n = lp.calls.length;
+    for (let i = 0; i < 60; i++) player.setMood({ tier: 1, danger: 0.3 + i * 1e-5 });
+    expect(lp.calls.length - n).toBeLessThanOrEqual(1);
+    player.setMood({ tier: 2, danger: 0.3 }); // a tier change always retargets
+    expect(lp.calls.length - n).toBe(2);
+  });
+
+  it('quick_pause_resume_keeps_the_bar_grid', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(BAR_S * 1000 * 0.5, ctx); // mid bar 0; bar 1 not composed yet
+    const bar1 = 0.05 + BAR_S;
+    player.pause();
+    timers.run(200, ctx);
+    const from = ctx.oscs.length;
+    player.resume();
+    timers.run(BAR_S * 1000, ctx);
+    const fresh = ctx.oscs.slice(from);
+    expect(fresh.length).toBeGreaterThan(0);
+    for (const o of fresh) expect(o.startT).toBeGreaterThanOrEqual(bar1 - 1e-9);
+  });
+
+  it('stingers_follow_the_grid_after_a_re_anchor', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(500, ctx);
+    player.pause();
+    timers.run(7_300, ctx); // long enough that the grid re-anchors on resume
+    player.resume();
+    timers.run(BAR_S * 1000 * 0.3, ctx);
+    const now = ctx.currentTime;
+    const from = ctx.oscs.length;
+    player.events([{ e: 'capture' }]);
+    const starts = ctx.oscs.slice(from).map((o) => o.startT).sort((a, b) => a - b);
+    expect(starts.length).toBeGreaterThan(0);
+    const stepS = stepSeconds(BPM.normal);
+    expect(starts[0]).toBeGreaterThanOrEqual(now - 1e-9);
+    expect(starts[0]).toBeLessThanOrEqual(now + 2 * stepS + 1e-9); // the next 8th, not a stale grid
+    // Stinger notes sit on the re-anchored 8th grid: the next bar starts on it too.
+    const resumedAt = 7.8;
+    const grid = (t: number) => ((t - (resumedAt + 0.05)) / (2 * stepS)) % 1;
+    for (const t of starts) expect(Math.min(grid(t), 1 - grid(t))).toBeLessThan(1e-6);
+  });
+
+  it('revive_during_tape_stop_holds_instead_of_jumping', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(100, ctx);
+    const out = ctx.gains[0];
+    player.events([{ e: 'down' }]);
+    timers.run(300, ctx); // mid tape stop
+    const n = out.calls.length;
+    player.events([{ e: 'revive' }]);
+    const after = out.calls.slice(n);
+    expect(after[0]).toMatchObject({ kind: 'hold', t: 0.4 });
+    expect(after.slice(1).map((c) => [c.kind, c.v])).toEqual([['lin', 0], ['lin', 1]]);
+  });
+
   it('milestone_transposes_effects', () => {
     const { ctx, timers, player } = setup({ roundKey: -2 });
     players.push(player);
@@ -272,15 +341,19 @@ describe('music voices', () => {
       const ctx = new FakeCtx();
       VOICES[layer](ctx as unknown as AudioContext, bus, 0.5, 330, 0.4, vel);
       expect(ctx.sources.length).toBeGreaterThan(0);
-      const audio = ctx.gainNodes.filter((g) => !g.modulates).map((g) => g.gain);
-      const env = audio.filter((g) => g.calls.length > 0);
+      const audio = ctx.gainNodes.filter((g) => !g.modulates);
+      const env = audio.filter((g) => g.gain.calls.length > 0);
       expect(env.length).toBeGreaterThan(0);
+      // Envelopes feeding the same node play in parallel: their peaks together stay under the cap.
+      const byTarget = new Map<unknown, number>();
       for (const g of env) {
-        expect(Math.max(...g.calls.map((c) => c.v))).toBeLessThanOrEqual(MAX_GAIN * vel + 1e-12);
-        expect(g.calls[0]).toMatchObject({ kind: 'set', t: 0.5 }); // starts at the scheduled time
+        const p = Math.max(...g.gain.calls.map((c) => c.v));
+        for (const to of g.targets) byTarget.set(to, (byTarget.get(to) ?? 0) + p);
+        expect(g.gain.calls[0]).toMatchObject({ kind: 'set', t: 0.5 }); // starts at the scheduled time
       }
+      for (const sum of byTarget.values()) expect(sum).toBeLessThanOrEqual(MAX_GAIN * vel + 1e-12);
       // Mix gains (set by value) never add up above unity.
-      for (const g of audio) expect(g.value).toBeLessThanOrEqual(1);
+      for (const g of audio) expect(g.gain.value).toBeLessThanOrEqual(1);
       for (const s of ctx.sources) expect(s.startT).toBeGreaterThanOrEqual(0.5);
       ctx.advance(10);
       for (const node of ctx.nodes) expect(node.disconnected).toBe(true);

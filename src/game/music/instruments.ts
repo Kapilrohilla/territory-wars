@@ -170,7 +170,8 @@ const stab: Voice = (c, out, t, f, _durS, vel) => {
 const kick: Voice = (c, out, t, _f, _durS, vel) => {
   const k = kit(c);
   const end = t + 0.22;
-  const body = k.env(peakOf(vel, 0.9), t, 0.003, 1, t + 0.003, end);
+  // Body and click overlap, so their shares sum to 1 and the voice stays ≤ MAX_GAIN × vel.
+  const body = k.env(peakOf(vel, 0.65), t, 0.003, 1, t + 0.003, end);
   const o = k.osc('sine', 160, t);
   o.frequency.exponentialRampToValueAtTime(60, t + 0.12);
   o.connect(body);
