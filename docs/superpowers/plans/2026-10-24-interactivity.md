@@ -197,3 +197,44 @@ These go in the existing Records & Settings screen (`screens.ts`), in its own "S
 - Settings getters fall back to defaults when storage is missing or corrupt.
 - `panFor` is clamped.
 - Volume maps 0–100 to gain 0–1.
+
+### Task 8: Smarter Hard bots (fair: same speed and rules as the player)
+
+The user chose **smarter only**: no speed boost and no rule changes.
+
+**Scope:**
+- All new behaviour is gated by flags in the `DIFFICULTY` table (`src/sim/config.ts`). Add these fields to `DifficultyTuning`, with all of them off or 0 for easy and normal:
+  - `smartHunt: boolean`
+  - `huntRadius: number`
+  - `packSize: number`
+  - `raidChance: number`
+  - `safeReturn: boolean`
+  - `loopScale: number`
+- Easy and Normal must behave exactly as today. Their existing bot tests are the regression baseline.
+- The sim stays deterministic: only the `rng` passed into `botInputs` is used. Bot per-tick cost stays O(bots × human trail points), and the trail scan uses the same bounding-box cull as `src/game/threats.ts`.
+
+**Hard behaviours (`src/sim/bots.ts`):**
+1. **Cut near the head** (`smartHunt`).
+   - Target choice: when hunting, aim for the point on the human's live trail that minimises `distToBot + 1.5·pathLengthFromHumanHead`. So it is close to the human's head, but reachable.
+   - Lead the target: aim slightly ahead of where the trail segment will be by the time the bot gets there, using the human's current heading for the live tail.
+   - Still obey self-trail avoidance and wall avoidance.
+2. **Wider awareness** (`huntRadius = 25` u). Hard bots consider any human trail point within 25 u in any direction, not just the ray cones. They only commit to a hunt if they can reach the target point before the human reaches home. Estimate this as `botDist / SPEED < homeDist / SPEED + 0.4` s, using `homeTarget`-style nearest-land distance computed in the sim. Duplicate a small helper rather than importing from `src/game`.
+3. **Pack hunting** (`packSize = 3`).
+   - Commitment: at most `packSize` bots commit to hunting the human at once. The closest ones are chosen, and the choice is re-evaluated every 0.5 s of world time, not every tick.
+   - Pincer approach: committed bots spread their approach by aiming at different trail points, spaced ≥ 6 u of path length apart.
+   - Everyone else: non-committed bots keep expanding.
+4. **Raids** (`raidChance = 0.25`): when planning a new trip, with probability `raidChance` (from `rng`), a Hard bot plans its outward waypoints so the loop passes through the nearest edge of the human's land, if that land is within 30 u. This steals territory. It must still return to its own land to capture.
+5. **Safe return** (`safeReturn`): an 'out' bot switches to 'return' when the human's head is closer to any point of the bot's trail than the bot is to its own land (plus a 2 u margin). The same check applies to rival bots' heads.
+6. **Bigger loops** (`loopScale = 1.35`): the waypoint spacing upper bound and the `MAX_TRAIL_LEN` cap are both multiplied by `loopScale` on Hard. Loops become bigger, but safe-return guards them.
+
+**Tests (`tests/bots.test.ts`, deterministic seeds):**
+- Normal regression: the existing tests pass unchanged, and a fixed-seed 30 s Normal world gives the same JSON before and after the change. Record a snapshot hash from the baseline commit.
+- `smartHunt`: given a human trail with the head at one end, a Hard bot's target is nearer the head than the plain nearest point would be.
+- Wide awareness: a Hard bot notices a trail 20 u away at 120° off its heading; a Normal bot does not.
+- Reachability: a Hard bot does not commit when the human is 1 u from home and the bot is 15 u away.
+- Pack: with 5 eligible Hard bots, at most 3 are hunting at once.
+- Raid: with a seeded rng that triggers a raid, the planned waypoints intersect the human's land.
+- Safe return: an 'out' Hard bot with the human near its trail switches to 'return'.
+- **Difficulty check** (a test or bench script with the numbers recorded in the report): run 3 seeds × 60 s of bots-only worlds per difficulty with the human parked at home, and compare average bot land % and bot self-death counts. Hard bots should hold more land on average than Normal, with no more self-deaths.
+
+**Commit:** "feat: smarter Hard bots — head cuts, pack hunts, raids, safe returns".
