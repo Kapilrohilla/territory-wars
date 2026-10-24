@@ -47,7 +47,8 @@ export type Composer = {
   /** One call per sim step's cues; returns stinger notes at or after quantize(nowStep). */
   events(list: { e: MusicEvent; size?: number }[], nowStep: number): NoteEv[];
   readonly excitement: number;
-  /** 0..3 milestones passed (from the bar after each), added on top of the round key. */
+  /** 0..3 milestones passed, added on top of the round key. Updates as soon as events() sees a
+   * milestone; the player applies it from the next bar it schedules. */
   readonly keyOffset: number;
   readonly state: 'playing' | 'down' | 'ended';
 };
@@ -166,12 +167,16 @@ export function createComposer(opts: { seed: number }): Composer {
   let excitement = 0;
   /** Bars still held at FULL_AT or above by a steal. */
   let hold = 0;
-  let keyOffset = 0, pendingKey = 0;
+  let keyOffset = 0;
   let state: 'playing' | 'down' | 'ended' = 'playing';
   /** The bar lead stays quiet before this step so a steal riff is heard on its own. */
   let riffEnd = -Infinity;
-  /** Root (0-based scale step) of the chord in the last bar, for stingers. */
-  let chordRoot = 0;
+  /** Chord roots (0-based scale steps) of recently composed bars, so stingers fit the bar they land in. */
+  const roots = new Map<number, number>();
+  let latestBar = -1;
+  const KEEP_ROOTS = 4;
+  /** Root of the chord sounding at `step`, or of the latest composed bar if that one isn't composed yet. */
+  const rootAt = (step: number) => roots.get(Math.floor(step / STEPS_PER_BAR)) ?? roots.get(latestBar) ?? 0;
   let prog: number[] | null = null;
   let tense = false;
   let pluckT: number[] = [];
@@ -211,7 +216,7 @@ export function createComposer(opts: { seed: number }): Composer {
   }
 
   /** Steal: a bouncy lead riff over one bar ending on a stab; bigger steals run longer and leap an octave. */
-  function stealRiff(q: number, size: number): NoteEv[] {
+  function stealRiff(q: number, size: number, chordRoot: number): NoteEv[] {
     const big = size >= 2;
     const { rhythm, stabAt } = big ? RIFF_BIG : RIFF_SMALL;
     const shape = pick(big ? RIFF_BIG_SHAPES : RIFF_SMALL_SHAPES);
@@ -228,10 +233,11 @@ export function createComposer(opts: { seed: number }): Composer {
 
   /** The stinger for one boost event at quantized step `q`. */
   function stinger(e: BoostEvent, q: number, size: number): NoteEv[] {
+    const chordRoot = rootAt(q);
     const tri = folded(chordRoot, PLUCK_HI);
     const pluck = (i: number, t: number): NoteEv => ({ layer: 'pluck', step: q + 2 * i, semi: scaleSemi(t), dur: 2, vel: 0.5 + 0.05 * i });
     switch (e) {
-      case 'steal': return stealRiff(q, size);
+      case 'steal': return stealRiff(q, size, chordRoot);
       case 'capture': return tri.map((t, i) => pluck(i, t));
       case 'kill': {
         const lift = 2 * Math.min(MAX_STREAK_LIFT, Math.max(0, Math.floor(size) - 1));
@@ -273,7 +279,7 @@ export function createComposer(opts: { seed: number }): Composer {
         return [];
       }
       const q = quantize(nowStep);
-      for (const x of list) if (x.e === 'milestone') pendingKey = Math.min(MAX_KEY_OFFSET, pendingKey + 1);
+      for (const x of list) if (x.e === 'milestone') keyOffset = Math.min(MAX_KEY_OFFSET, keyOffset + 1);
       const end = list.find((x) => x.e === 'win' || x.e === 'gameover');
       if (end) {
         state = 'ended';
@@ -294,13 +300,14 @@ export function createComposer(opts: { seed: number }): Composer {
     },
 
     bar(index) {
-      keyOffset = pendingKey;
       if (state !== 'playing') return [];
       const { tier } = pending;
       const wantTense = tier === 2;
       if (!prog || index % BARS_PER_PHRASE === 0 || wantTense !== tense) newPhrase(wantTense);
       const r = prog![index % BARS_PER_PHRASE] - 1;
-      chordRoot = r;
+      roots.set(index, r);
+      roots.delete(index - KEEP_ROOTS);
+      latestBar = Math.max(latestBar, index);
       const layers = layersFor(tier, excitement);
       const full = excitement >= FULL_AT;
       const at = index * STEPS_PER_BAR;

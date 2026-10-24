@@ -376,7 +376,6 @@ describe('music composer events', () => {
     expect(out.length).toBeGreaterThan(0);
     for (const n of out) expect(['lead', 'stab']).toContain(n.layer);
     expect(c.excitement).toBe(1);
-    c.bar(1);
     expect(c.keyOffset).toBe(1);
   });
 
@@ -411,13 +410,29 @@ describe('music composer events', () => {
     expect(c.keyOffset).toBe(3);
   });
 
-  it('key_offset_applies_from_next_bar', () => {
+  it('key_offset_reported_right_after_events', () => {
+    // The player reads it straight away to retune effects; it applies it from the next bar it schedules.
     const c = createComposer({ seed: 1 });
     c.bar(0);
     c.events([{ e: 'milestone' }], 4);
-    expect(c.keyOffset).toBe(0);
+    expect(c.keyOffset).toBe(1);
     c.bar(1);
     expect(c.keyOffset).toBe(1);
+  });
+
+  it('stingers_fit_the_bar_they_land_in', () => {
+    for (const seed of [1, 2, 3, 4, 5, 6]) {
+      const c = createComposer({ seed });
+      c.setMood({ tier: 0, danger: 0 });
+      const padPcs = (notes: NoteEv[]) => new Set(notes.filter((n) => n.layer === 'pad').map((n) => pc(n.semi)));
+      // The player composes a bar ahead: bars 0 and 1 are both known while bar 0 plays.
+      const b0 = padPcs(c.bar(0)), b1 = padPcs(c.bar(1));
+      const arp = (now: number) => new Set(c.events([{ e: 'capture' }], now).map((n) => pc(n.semi)));
+      const fits = (chord: Set<number>, notes: Set<number>) => [...chord].every((x) => notes.has(x));
+      expect(fits(b0, arp(4))).toBe(true); // lands in bar 0
+      expect(fits(b1, arp(15.9))).toBe(true); // quantizes to step 16: bar 1
+      expect(fits(b1, arp(40))).toBe(true); // bar 2 not composed yet: latest known chord
+    }
   });
 
   it('down_silences_until_revive', () => {
