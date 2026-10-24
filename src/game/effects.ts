@@ -58,10 +58,21 @@ const SPARK_LEN_S = 0.045;
 const FLASH_S = 0.18;
 const FLASH_POOL = 4;
 const FLASH_R = 1.1;
+// Knockout impact at the victim's head: a white flash ring (0 → 2.5 u over 160 ms, fading)
+// and 8 short white lines radiating out a little longer. Skipped under reduced motion.
+const IMPACT_RING_S = 0.16;
+const IMPACT_RING_R = 2.5;
+const IMPACT_LINE_S = 0.22;
+const IMPACT_LINES = 8;
+const IMPACT_LINE_LEN = 0.8;
+const IMPACT_POOL = 4;
+/** The floating badge over the human's head on a knockout (the banner carries the words). */
+export const KILL_BADGE = '+1';
 
 /** Pooled spark particle; `t >= life` means free. */
 type Spark = { x: number; y: number; vx: number; vy: number; t: number; life: number };
 type Flash = { x: number; y: number; t: number };
+type Impact = { x: number; y: number; t: number; rot: number };
 
 type Chunk = {
   x: number; y: number; vx: number; vy: number; rot: number; vr: number;
@@ -264,6 +275,8 @@ export function createEffects(): Effects {
   const chunks: Chunk[] = Array.from({ length: CHUNK_POOL }, () => ({
     x: 0, y: 0, vx: 0, vy: 0, rot: 0, vr: 0, size: 0, color: '', t: 1, life: 0,
   }));
+  const impacts: Impact[] = Array.from({ length: IMPACT_POOL }, () => ({ x: 0, y: 0, t: IMPACT_LINE_S, rot: 0 }));
+  let liveImpacts = 0;
   let liveSparks = 0;
   let liveFlashes = 0;
   let liveChunks = 0;
@@ -328,6 +341,19 @@ export function createEffects(): Effects {
     }
   };
 
+  /** The knockout flash ring and impact lines at a victim's head (not under reduced motion). */
+  const spawnImpact = (at: Vec) => {
+    if (prefersReducedMotion()) return;
+    // Reuse a free slot, else the oldest.
+    let slot = impacts[0];
+    for (const im of impacts) {
+      if (im.t >= IMPACT_LINE_S) { slot = im; break; }
+      if (im.t > slot.t) slot = im;
+    }
+    if (slot.t >= IMPACT_LINE_S) liveImpacts++;
+    slot.x = at.x; slot.y = at.y; slot.t = 0; slot.rot = Math.random() * Math.PI;
+  };
+
   /** Sparks once per new burn the human started on a rival's trail. */
   const checkBurn = (world: World, victimId: number) => {
     const v = world.players[victimId];
@@ -369,7 +395,9 @@ export function createEffects(): Effects {
           burstDeath(world, p.id);
           const human = world.players[world.humanId];
           if (e.killerId === human.id && p.id !== human.id) {
-            pushText(killText(human.kills), p.colorIndex, human.pos, 28);
+            // The words go to the HUD's KNOCKOUT! banner; over the head floats just the +1.
+            pushText(KILL_BADGE, p.colorIndex, human.pos, 28);
+            spawnImpact(p.pos);
             cam.nudge(KILL_NUDGE);
             vibrate(KILL_VIBRATE_MS);
           }
@@ -424,6 +452,14 @@ export function createEffects(): Effects {
           if (f.t >= FLASH_S) continue;
           f.t += dt;
           if (f.t < FLASH_S) liveFlashes++;
+        }
+      }
+      if (liveImpacts) {
+        liveImpacts = 0;
+        for (const im of impacts) {
+          if (im.t >= IMPACT_LINE_S) continue;
+          im.t += dt;
+          if (im.t < IMPACT_LINE_S) liveImpacts++;
         }
       }
       if (liveChunks) {
@@ -515,6 +551,35 @@ export function createEffects(): Effects {
         }
         ctx.globalAlpha = 1;
       }
+      if (liveImpacts) {
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineCap = 'round';
+        for (const im of impacts) {
+          if (im.t >= IMPACT_LINE_S) continue;
+          if (im.t < IMPACT_RING_S) {
+            const u = im.t / IMPACT_RING_S;
+            ctx.globalAlpha = 0.9 * (1 - u);
+            ctx.lineWidth = 0.35 * (1 - 0.6 * u);
+            ctx.beginPath();
+            ctx.arc(im.x, im.y, IMPACT_RING_R * easeOutCubic(u), 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          const v = im.t / IMPACT_LINE_S;
+          const r0 = 0.9 + 1.9 * easeOutCubic(v);
+          const len = IMPACT_LINE_LEN * (1 - 0.5 * v);
+          ctx.globalAlpha = 1 - v * v;
+          ctx.lineWidth = 0.18;
+          ctx.beginPath();
+          for (let i = 0; i < IMPACT_LINES; i++) {
+            const a = im.rot + (i / IMPACT_LINES) * Math.PI * 2;
+            const c = Math.cos(a), sn = Math.sin(a);
+            ctx.moveTo(im.x + c * r0, im.y + sn * r0);
+            ctx.lineTo(im.x + c * (r0 + len), im.y + sn * (r0 + len));
+          }
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
       if (!liveSparks && !liveFlashes) return;
       if (liveFlashes) {
         ctx.fillStyle = '#FFB347';
@@ -569,7 +634,7 @@ export function createEffects(): Effects {
 
     busy() {
       return captures.length > 0 || texts.length > 0 || dying.length > 0 || liveSparks > 0 || liveFlashes > 0
-        || liveChunks > 0 || livePops > 0;
+        || liveChunks > 0 || livePops > 0 || liveImpacts > 0;
     },
   };
 }

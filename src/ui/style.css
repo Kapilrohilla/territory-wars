@@ -991,6 +991,38 @@ button:focus-visible,
 .tw-ribbon.tw-still .tw-speck { display: none; }
 @keyframes tw-pulse { from { transform: scale(1); } to { transform: scale(1.04); } }
 
+/* Knockout banner: chunky gold pill with a lip, Rubik 900 ink; a white "×N STREAK" chip in a streak. */
+.tw-ko {
+  grid-area: 3 / 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  white-space: nowrap;
+}
+.tw-ko-pill {
+  padding: 8px 22px;
+  border-radius: 999px;
+  background: var(--gold);
+  box-shadow: 0 4px 0 #c99a1e, 0 10px 20px rgba(201, 154, 30, 0.35);
+  color: var(--ink);
+  font: 900 22px var(--font-display);
+  letter-spacing: 0.05em;
+}
+.tw-ko-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px 5px 9px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 3px 0 #c99a1e, 0 6px 14px rgba(52, 50, 63, 0.18);
+  color: var(--ink);
+  font: 800 14px var(--font-display);
+  letter-spacing: 0.04em;
+}
+.tw-ko-chip .tw-icon { width: 16px; height: 16px; color: var(--ember); }
+
 /* "Far from home": translucent white pill, beating heart, 3-segment ember meter. */
 .tw-danger-pill {
   display: inline-flex;

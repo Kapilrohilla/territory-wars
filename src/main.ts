@@ -152,6 +152,7 @@ function play(prefs: StartPrefs): void {
     onCue: (cue) => {
       if (cue.name === 'capture') ui.bumpPct();
       else if (cue.name === 'milestone') ui.showMilestone(cue.tier ?? 0, cue.delay);
+      else if (cue.name === 'kill') ui.showKnockout(cue.streak ?? 0);
     },
     humanName: prefs.name,
     humanSkin: loadSkin(lifetimeBefore, loadAdUnlocks()).id,

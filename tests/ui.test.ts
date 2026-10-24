@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   dangerSegments, heartbeatSeconds,
   buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
-  highestBest, hudAlerts, milestoneRibbonText, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
+  highestBest, hudAlerts, milestoneRibbonText, streakChipText, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
 import { isVibrationOn, setVibrationOn } from '../src/native/platform';
 import { COLOR_NAMES, PALETTE } from '../src/game/palette';
@@ -261,5 +261,17 @@ describe('milestoneRibbonText', () => {
   it('clamps an out-of-range tier', () => {
     expect(milestoneRibbonText(-1)).toBe('10% CLAIMED!');
     expect(milestoneRibbonText(7)).toBe('HALF THE MAP!');
+  });
+});
+
+describe('streakChipText', () => {
+  it('shows no chip for a lone knockout', () => {
+    expect(streakChipText(1)).toBeNull();
+    expect(streakChipText(0)).toBeNull();
+  });
+
+  it('counts the kills in the streak from the second one on', () => {
+    expect(streakChipText(2)).toBe('×2 STREAK');
+    expect(streakChipText(3)).toBe('×3 STREAK');
   });
 });

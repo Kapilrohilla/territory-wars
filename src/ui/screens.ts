@@ -124,6 +124,14 @@ export function milestoneRibbonText(tier: number): string {
   return mark === 50 ? 'HALF THE MAP!' : `${mark}% CLAIMED!`;
 }
 
+/**
+ * The streak banner's chip for the `n`-th kill of a quick streak (1 = a lone knockout, which
+ * gets no chip): "×3 STREAK". The kill cue's `streak` is n − 1.
+ */
+export function streakChipText(n: number): string | null {
+  return n >= 2 ? `×${Math.floor(n)} STREAK` : null;
+}
+
 export type HudAlerts = { burning: boolean; shielded: boolean };
 
 /** HUD warnings for the human: the trail is burning, or the post-revive shield is up. */
@@ -302,6 +310,8 @@ export type Screens = {
   bumpPct(): void;
   /** The human first passed milestone `tier` (MILESTONES index): a gold ribbon, after `delayS`. */
   showMilestone(tier: number, delayS?: number): void;
+  /** The human knocked a rival out: the gold "KNOCKOUT!" banner, with a chip from a 2nd quick kill on. */
+  showKnockout(streak: number): void;
   showOver(stats: OverStats, onAgain: () => void, onHome: () => void, nativeAd?: NativeAdSlot): void;
   /** Revive modal over the (frozen) game and HUD, with a REVIVE_COUNTDOWN_MS countdown. */
   showRevive(info: ReviveInfo, handlers: ReviveHandlers): void;
@@ -324,6 +334,18 @@ const RIBBON_KEYS: Keyframe[] = [
   { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.18 },
   { transform: 'translateY(0) scale(1)', opacity: 1, offset: 0.85 },
   { transform: 'translateY(-20px) scale(0.95)', opacity: 0 },
+];
+/** Knockout banner: slides in (~180 ms), holds 1.1 s, slides out (~220 ms). */
+const KO_IN_MS = 180;
+const KO_HOLD_MS = 1100;
+const KO_OUT_MS = 220;
+const KO_MS = KO_IN_MS + KO_HOLD_MS + KO_OUT_MS;
+const KO_KEYS: Keyframe[] = [
+  { transform: 'translateY(-24px) scale(0.85)', opacity: 0 },
+  { transform: 'translateY(0) scale(1.08)', opacity: 1, offset: KO_IN_MS / KO_MS * 0.7 },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: KO_IN_MS / KO_MS },
+  { transform: 'translateY(0) scale(1)', opacity: 1, offset: (KO_IN_MS + KO_HOLD_MS) / KO_MS },
+  { transform: 'translateY(-18px) scale(0.95)', opacity: 0 },
 ];
 const RIBBON_SPECKS = 14;
 const SPECK_MS = 900;
@@ -699,7 +721,34 @@ export function createScreens(root: HTMLElement): Screens {
     ribbon.append(sp);
   }
   ribbon.hidden = true;
-  alerts.append(dangerPill, burnPill, ribbon);
+  // Knockout banner: a gold pill with a lip ("KNOCKOUT!") and, in a streak, a "×N STREAK" chip.
+  const ko = el('div', 'tw-ko'); // announced by the alerts' status role
+  const koPill = el('span', 'tw-ko-pill', 'KNOCKOUT!');
+  const koChip = el('span', 'tw-ko-chip');
+  const koChipText = el('span');
+  koChip.append(icon('flame'), koChipText);
+  ko.append(koPill, koChip);
+  ko.hidden = true;
+  alerts.append(dangerPill, burnPill, ribbon, ko);
+  let koTimer: ReturnType<typeof setTimeout> | null = null;
+  let koAnim: Animation | null = null;
+  const hideKo = () => {
+    if (koTimer !== null) clearTimeout(koTimer);
+    koTimer = null;
+    koAnim?.cancel();
+    koAnim = null;
+    ko.hidden = true;
+  };
+  const playKo = (streak: number) => {
+    hideKo();
+    const chip = streakChipText(streak + 1);
+    koChip.hidden = chip === null;
+    if (chip !== null) setText(koChipText, chip);
+    ko.hidden = false;
+    const still = reduceMotion() || typeof ko.animate !== 'function';
+    if (!still) koAnim = ko.animate(KO_KEYS, { duration: KO_MS, easing: 'ease-out' });
+    koTimer = setTimeout(hideKo, KO_MS);
+  };
   let ribbonTimer: ReturnType<typeof setTimeout> | null = null;
   let ribbonDelay: ReturnType<typeof setTimeout> | null = null;
   const hideRibbon = () => {
@@ -1132,6 +1181,7 @@ export function createScreens(root: HTMLElement): Screens {
       shieldToast.hidden = burnTag.hidden = true;
       setAlerts(false, 0);
       hideRibbon();
+      hideKo();
       area.classList.remove('tw-burning');
       steerHint.classList.remove('tw-gone');
       hudColor = -1;
@@ -1156,6 +1206,7 @@ export function createScreens(root: HTMLElement): Screens {
       return pctTween.active(now);
     },
     bumpPct: bumpCard,
+    showKnockout: playKo,
     showMilestone(tier, delayS = 0) {
       hideRibbon();
       if (delayS > 0) ribbonDelay = setTimeout(() => playRibbon(tier), delayS * 1000);
