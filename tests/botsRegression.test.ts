@@ -11,6 +11,12 @@ import type { Input } from '../src/sim/types';
  * (Task 8). These hashes were recorded at commit 0dc621d: a fixed-seed world, 30 s of
  * botInputs each tick, the human parked at home. If one fails, a change leaked into
  * Easy/Normal.
+ *
+ * Re-recording: the hashes depend on exact float results (Math.hypot/atan2/sin, polygon
+ * clipping), so a JS engine or dependency upgrade, or a deliberate change to shared sim code
+ * (world, territory, geometry, rng), can change them with Easy/Normal bots untouched. Only
+ * then — after checking the diff really is behaviour-neutral or intended for Easy/Normal —
+ * paste the new values from the failure output and note the commit here.
  */
 function runHash(difficulty: Difficulty, seed: number, drive = false): string {
   const w = createWorld({ seed, humanName: 'Tester', humanColor: 0, difficulty });

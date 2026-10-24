@@ -360,7 +360,8 @@ describe('hard bots (Task 8)', () => {
       const w = arena(d, [1], v(-60, 60));
       placeBot(w, 1, v(10, 12), Math.PI / 2, v(0, 0));
       const b = w.players[1];
-      for (let y = 3; y < 12; y += 0.25) b.trail.push(v(10, y)); // 3 u off its land, now ~10 u out
+      // Trail from (10, 3) up to the head at (10, 12); its land is the r = 3 disk at the origin.
+      for (let y = 3; y < 12; y += 0.25) b.trail.push(v(10, y));
       const h = w.players[w.humanId];
       h.pos = humanAt; h.prevPos = humanAt;
       const brains = createBrains(w);
@@ -369,7 +370,7 @@ describe('hard bots (Task 8)', () => {
       botInputs(w, brains, mulberry32(3));
       return brains.get(1)!.state;
     };
-    expect(state('hard', v(14, 6))).toBe('return'); // 4 u from its trail, it is ~9 u from land
+    expect(state('hard', v(14, 6))).toBe('return'); // 4 u from its trail; the bot is ~12.6 u from its land
     expect(state('normal', v(14, 6))).toBe('out');
     expect(state('hard', v(40, 6))).toBe('out'); // far away: carry on
   });

@@ -2,6 +2,9 @@
 // home. Hard bots (smarter, same speed and rules) must hold more land on average than Normal
 // bots, with no more self-deaths. Prints the numbers (`npx vitest run tests/difficulty.test.ts
 // --silent=false`).
+// The margins depend on tuning: re-run it after changing any DifficultyTuning value or bot
+// constant. If Hard drops below Normal, retune the Hard-only values (config.ts hard, the
+// smartHunt/raid/safe-return constants in bots.ts), never Easy/Normal (botsRegression pins them).
 import { it, expect } from 'vitest';
 import { createWorld, step, pct } from '../src/sim/world';
 import { createBrains, botInputs } from '../src/sim/bots';
