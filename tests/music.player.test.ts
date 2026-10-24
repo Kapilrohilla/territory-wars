@@ -32,6 +32,8 @@ class FakeSource extends FakeNode {
   loop = false;
   onended: (() => void) | null = null;
   startT = -1;
+  /** The context time when the voice was built. */
+  createdAt = 0;
   stopT = Infinity;
   ended = false;
   start(t: number) { this.startT = t; }
@@ -55,8 +57,14 @@ class FakeCtx {
     this.gainNodes.push(n);
     return n;
   }
-  createOscillator() { const o = this.track(new FakeSource()); this.oscs.push(o); this.sources.push(o); return o; }
-  createBufferSource() { const s = this.track(new FakeSource()); this.sources.push(s); return s; }
+  createOscillator() {
+    const o = this.track(new FakeSource());
+    o.createdAt = this.currentTime;
+    this.oscs.push(o);
+    this.sources.push(o);
+    return o;
+  }
+  createBufferSource() { const s = this.track(new FakeSource()); s.createdAt = this.currentTime; this.sources.push(s); return s; }
   createBiquadFilter() {
     const f = this.track(Object.assign(new FakeNode(), { type: '', frequency: new FakeParam(), Q: new FakeParam() }));
     this.filters.push(f);
@@ -104,7 +112,7 @@ const last = <T>(xs: T[]): T => xs[xs.length - 1];
 const BAR_S = STEPS_PER_BAR * stepSeconds(BPM.normal);
 const bus = new FakeNode() as unknown as AudioNode;
 
-function setup(opts: { roundKey?: number; ctxNullTicks?: number } = {}) {
+function setup(opts: { roundKey?: number; ctxNullTicks?: number; audible?: () => boolean } = {}) {
   const ctx = new FakeCtx();
   const timers = new FakeTimers();
   let nullTicks = opts.ctxNullTicks ?? 0;
@@ -112,6 +120,7 @@ function setup(opts: { roundKey?: number; ctxNullTicks?: number } = {}) {
     difficulty: 'normal', seed: 42, roundKey: opts.roundKey ?? 0,
     ctx: () => (nullTicks-- > 0 ? null : (ctx as unknown as AudioContext)),
     bus: () => bus,
+    audible: opts.audible ?? (() => true),
     timers,
   });
   return { ctx, timers, player };
@@ -124,10 +133,16 @@ describe('music player', () => {
   it('schedules_ahead_only', () => {
     const { ctx, timers, player } = setup();
     players.push(player);
+    player.setMood({ tier: 1, danger: 0 });
     player.start();
     timers.run(0, ctx);
     expect(ctx.oscs.length).toBeGreaterThan(0);
-    for (const o of ctx.oscs) expect(o.startT).toBeLessThanOrEqual(0.12 + BAR_S);
+    for (const o of ctx.oscs) expect(o.startT).toBeLessThan(0.12);
+    timers.run(3 * BAR_S * 1000, ctx);
+    player.events([{ e: 'steal', size: 3 }]); // a bar-long riff is queued, not built at once
+    timers.run(3 * BAR_S * 1000, ctx);
+    // Every voice is built only once its note starts within the 0.12 s horizon.
+    for (const s of ctx.sources) expect(s.startT - s.createdAt).toBeLessThan(0.12 + 1e-9);
   });
 
   it('scheduler_holds_no_backlog', () => {
@@ -144,7 +159,9 @@ describe('music player', () => {
       expect(timers.pending.size).toBe(1);
     }
     expect(maxLive).toBeLessThan(64);
-    expect(maxQueued).toBeLessThan(256); // at most about a bar of notes queued ahead
+    // Only what's sounding plus 0.12 s of notes: no bar is built ahead.
+    expect(maxQueued - maxLive).toBeLessThan(32);
+    expect(maxQueued).toBeLessThan(80);
     // Bars kept coming the whole time, never more than the horizon ahead.
     const last = Math.max(...ctx.oscs.map((o) => o.startT));
     expect(last).toBeGreaterThan(299 - BAR_S);
@@ -285,18 +302,30 @@ describe('music player', () => {
   });
 
   it('stingers_follow_the_grid_after_a_re_anchor', () => {
-    const { ctx, timers, player } = setup();
-    players.push(player);
-    player.start();
-    timers.run(500, ctx);
-    player.pause();
-    timers.run(7_300, ctx); // long enough that the grid re-anchors on resume
-    player.resume();
-    timers.run(BAR_S * 1000 * 0.3, ctx);
-    const now = ctx.currentTime;
-    const from = ctx.oscs.length;
-    player.events([{ e: 'capture' }]);
-    const starts = ctx.oscs.slice(from).map((o) => o.startT).sort((a, b) => a - b);
+    const run = (capture: boolean) => {
+      const { ctx, timers, player } = setup();
+      players.push(player);
+      player.start();
+      timers.run(500, ctx);
+      player.pause();
+      timers.run(7_300, ctx); // long enough that the grid re-anchors on resume
+      player.resume();
+      timers.run(BAR_S * 1000 * 0.3, ctx);
+      const at = ctx.currentTime;
+      const from = ctx.oscs.length;
+      if (capture) player.events([{ e: 'capture' }]);
+      timers.run(400, ctx); // still inside the same bar
+      return { at, starts: ctx.oscs.slice(from).map((o) => o.startT) };
+    };
+    // The stinger's voices are what the capture run built beyond the same run without it.
+    const base = run(false), withCapture = run(true);
+    const now = withCapture.at;
+    const starts = withCapture.starts.slice();
+    for (const t of base.starts) {
+      const i = starts.findIndex((x) => Math.abs(x - t) < 1e-9);
+      if (i >= 0) starts.splice(i, 1);
+    }
+    starts.sort((a, b) => a - b);
     expect(starts.length).toBeGreaterThan(0);
     const stepS = stepSeconds(BPM.normal);
     expect(starts[0]).toBeGreaterThanOrEqual(now - 1e-9);
@@ -322,33 +351,123 @@ describe('music player', () => {
     expect(after.slice(1).map((c) => [c.kind, c.v])).toEqual([['lin', 0], ['lin', 1]]);
   });
 
-  it('milestone_transposes_effects', () => {
+  it('effects_are_in_the_round_key_from_creation', () => {
+    // The round's start chime plays before start(): it must already be in the round key.
+    setTranspose(0);
+    const { player } = setup({ roundKey: -2 });
+    players.push(player);
+    expect(getTranspose()).toBe(-2);
+    player.start();
+    expect(getTranspose()).toBe(-2);
+  });
+
+  it('milestone_transposes_effects_on_the_next_downbeat', () => {
     const { ctx, timers, player } = setup({ roundKey: -2 });
     players.push(player);
     player.start();
     expect(getTranspose()).toBe(-2);
     timers.run(100, ctx);
     player.events([{ e: 'milestone' }]);
+    // The fanfare right after the milestone stays in tune with the bar still ringing.
+    expect(getTranspose()).toBe(-2);
+    const bar1 = 0.05 + BAR_S;
+    timers.run((bar1 - ctx.currentTime) * 1000 - 5, ctx);
+    expect(getTranspose()).toBe(-2);
+    timers.run(30, ctx); // the first tick at or after the downbeat
     expect(getTranspose()).toBe(-1);
     player.dispose();
     expect(getTranspose()).toBe(0);
   });
 
-  it('milestone_lifts_the_next_bar_by_a_semitone', () => {
+  it('milestone_lifts_from_the_next_bar_and_never_before', () => {
+    // Same seed with and without the milestone; a capture in the same call is the stinger.
     const pitches = (withMilestone: boolean) => {
       const { ctx, timers, player } = setup();
       players.push(player);
       player.start();
-      timers.run(100, ctx);
-      if (withMilestone) player.events([{ e: 'milestone' }]);
-      const from = ctx.oscs.length;
-      timers.run(BAR_S * 1000, ctx);
-      return ctx.oscs.slice(from).map((o) => o.frequency.calls.find((c) => c.kind === 'set')!.v);
+      timers.run(BAR_S * 1000 * 0.4, ctx);
+      player.events(withMilestone ? [{ e: 'capture' }, { e: 'milestone' }] : [{ e: 'capture' }]);
+      timers.run(BAR_S * 1000 * 1.5, ctx);
+      return ctx.oscs.map((o) => ({ t: o.startT, f: o.frequency.calls.find((c) => c.kind === 'set')!.v }));
     };
     const a = pitches(false), b = pitches(true);
+    const bar1 = 0.05 + BAR_S;
     expect(b.length).toBe(a.length);
-    expect(b.length).toBeGreaterThan(0);
-    for (let i = 0; i < a.length; i++) expect(b[i] / a[i]).toBeCloseTo(2 ** (1 / 12), 6);
+    const before = b.filter((o) => o.t < bar1 - 1e-9).length;
+    expect(before).toBeGreaterThan(0);
+    expect(b.length - before).toBeGreaterThan(0);
+    let lifted = 0;
+    for (let i = 0; i < a.length; i++) {
+      expect(b[i].t).toBeCloseTo(a[i].t, 9);
+      const r = b[i].f / a[i].f;
+      // Nothing (bar notes or the stinger) before the next bar's downbeat uses the new key.
+      if (b[i].t < bar1 - 1e-9) expect(r).toBeCloseTo(1, 9);
+      else if (Math.abs(r - 1) > 1e-9) { expect(r).toBeCloseTo(2 ** (1 / 12), 6); lifted++; }
+      // (fixed-pitch drum oscillators, such as the kick's, read 1 after the lift too)
+    }
+    expect(lifted).toBeGreaterThan(0);
+  });
+
+  it('inaudible_builds_no_voices_but_keeps_composing', () => {
+    let loud = false;
+    const { ctx, timers, player } = setup({ audible: () => loud });
+    players.push(player);
+    player.setMood({ tier: 1, danger: 0 });
+    player.start();
+    timers.run(2 * BAR_S * 1000, ctx);
+    player.events([{ e: 'steal', size: 2 }]);
+    player.events([{ e: 'down' }]); // no tape-stop glide either
+    player.events([{ e: 'revive' }]);
+    timers.run(2 * BAR_S * 1000, ctx);
+    expect(ctx.sources.length).toBe(0);
+    expect(ctx.nodes.length).toBe(2); // only the player's own filter and gain
+    loud = true;
+    const now = ctx.currentTime;
+    timers.run(BAR_S * 1000, ctx);
+    expect(ctx.oscs.length).toBeGreaterThan(0);
+    // Picks up on the running grid, with no backlog of the silent bars.
+    for (const s of ctx.sources) expect(s.startT).toBeGreaterThanOrEqual(now - 1e-9);
+    const stepS = stepSeconds(BPM.normal);
+    const onGrid = (t: number) => { const x = ((t - 0.05) / stepS) % 1; return Math.min(x, 1 - x) < 1e-6; };
+    expect(ctx.oscs.filter((o) => o.startT > now + 0.2).every((o) => onGrid(o.startT))).toBe(true);
+  });
+
+  it('pause_drops_unbuilt_notes', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(BAR_S * 1000 * 0.25, ctx);
+    player.pause();
+    const n = ctx.sources.length;
+    timers.run(10_000, ctx);
+    expect(ctx.sources.length).toBe(n);
+    player.resume();
+    timers.run(BAR_S * 1000, ctx);
+    // Nothing from before the pause is built late: every new voice starts on or after now.
+    const fresh = ctx.sources.slice(n);
+    expect(fresh.length).toBeGreaterThan(0);
+    for (const s of fresh) expect(s.startT).toBeGreaterThanOrEqual(s.createdAt - 1e-9);
+  });
+
+  it('a_second_dispose_cuts_a_ringing_cadence_short', () => {
+    const { ctx, timers, player } = setup();
+    players.push(player);
+    player.start();
+    timers.run(100, ctx);
+    player.events([{ e: 'win' }]);
+    const [out, filter] = [ctx.gainNodes[0], ctx.nodes[1]];
+    player.dispose();
+    timers.run(1000, ctx);
+    expect(out.disconnected).toBe(false); // still ringing out
+    const now = ctx.currentTime;
+    player.dispose(); // a quick Play again
+    expect(out.gain.calls.some((c) => c.kind === 'lin' && c.v === 0 && c.t > now && c.t <= now + 0.1 + 1e-9)).toBe(true);
+    timers.run(200, ctx);
+    expect(out.disconnected).toBe(true);
+    expect(filter.disconnected).toBe(true);
+    expect(timers.pending.size).toBe(0);
+    player.dispose();
+    expect(timers.pending.size).toBe(0);
   });
 
   it('down_is_a_tape_stop_and_revive_fades_back_in', () => {

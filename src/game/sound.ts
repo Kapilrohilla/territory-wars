@@ -123,6 +123,11 @@ function musicLevel(): number {
   return MUSIC_GAIN * musicVolume;
 }
 
+/** Whether music can be heard at all: not muted and the music volume above 0. */
+export function musicAudible(): boolean {
+  return !muted && musicVolume > 0;
+}
+
 function applyMaster(): void {
   if (master && ctx) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02);
 }
