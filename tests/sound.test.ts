@@ -13,6 +13,7 @@ class FakeParam {
   linearRampToValueAtTime(v: number, t: number) { this.calls.push({ kind: 'lin', v, t }); }
   exponentialRampToValueAtTime(v: number, t: number) { this.calls.push({ kind: 'exp', v, t }); }
   setTargetAtTime(v: number, t: number) { this.calls.push({ kind: 'target', v, t }); }
+  cancelAndHoldAtTime(t: number) { this.calls.push({ kind: 'hold', v: this.value, t }); }
 }
 class FakeNode {
   connect(_to?: unknown) {}
@@ -244,20 +245,52 @@ describe('audio buses', () => {
   });
 
   it('duckMusic dips the music bus to 0.6x and restores it within 0.25 s', async () => {
-    g.AudioContext = FakeCtx;
-    vi.resetModules();
-    const s = await import('../src/game/sound');
-    s.setMusicVolume(100);
-    s.unlockAudio();
-    const bus = s.musicBus() as unknown as { gain: FakeParam };
-    const level = MUSIC_GAIN;
-    bus.gain.calls.length = 0;
-    s.duckMusic();
-    const [dip, back] = bus.gain.calls;
-    expect(dip.v).toBeCloseTo(level * 0.6, 9);
-    expect(back.v).toBeCloseTo(level, 9);
-    expect(back.t).toBeLessThanOrEqual(0.25);
-    expect(back.t).toBeGreaterThan(dip.t);
+    vi.useFakeTimers();
+    try {
+      g.AudioContext = FakeCtx;
+      vi.resetModules();
+      const s = await import('../src/game/sound');
+      s.setMusicVolume(100);
+      s.unlockAudio();
+      const bus = s.musicBus() as unknown as { gain: FakeParam };
+      bus.gain.calls.length = 0;
+      s.duckMusic();
+      vi.advanceTimersByTime(100);
+      const targets = bus.gain.calls.filter((c) => c.kind === 'target');
+      expect(targets[0].v).toBeCloseTo(MUSIC_GAIN * 0.6, 9);
+      expect(targets[1].v).toBeCloseTo(MUSIC_GAIN, 9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('two ducks 50 ms apart leave one restore, and it uses the live music level', async () => {
+    vi.useFakeTimers();
+    try {
+      g.AudioContext = FakeCtx;
+      vi.resetModules();
+      const s = await import('../src/game/sound');
+      s.setMusicVolume(100);
+      s.unlockAudio();
+      const bus = s.musicBus() as unknown as { gain: FakeParam };
+      bus.gain.calls.length = 0;
+      s.duckMusic();
+      vi.advanceTimersByTime(50);
+      s.duckMusic();
+      s.setMusicVolume(20); // a slider move mid-duck
+      vi.advanceTimersByTime(99);
+      expect(bus.gain.calls.filter((c) => c.kind === 'hold').length).toBe(2); // no restore yet
+      vi.advanceTimersByTime(1);
+      const calls = bus.gain.calls;
+      expect(calls.filter((c) => c.kind === 'hold').length).toBe(3);
+      const last = calls[calls.length - 1];
+      expect(last.kind).toBe('target');
+      expect(last.v).toBeCloseTo(MUSIC_GAIN * 0.2, 9);
+      vi.advanceTimersByTime(500);
+      expect(bus.gain.calls.length).toBe(calls.length); // the first duck's restore never fires
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('music volume defaults to 50, clamps and saves through setMusicVolume', async () => {

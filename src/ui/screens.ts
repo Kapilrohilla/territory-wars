@@ -359,8 +359,8 @@ export type Screens = {
   showSkins(view: SkinsView, onTab: (tab: Tab) => void): void;
   /** Overview canvas in the HUD's bottom-right corner. */
   minimap: HTMLCanvasElement;
-  /** The in-game HUD; its pause button calls onPause. */
-  showHud(onPause: () => void): void;
+  /** The in-game HUD; its pause button calls onPause, and onOvertake fires with each overtake toast. */
+  showHud(onPause: () => void, onOvertake?: () => void): void;
   /** Screen rects (CSS px) of the visible HUD corner cards, for the canvas overlay to avoid. */
   hudRects(): { x: number; y: number; w: number; h: number }[];
   /** Pause menu over the frozen game. */
@@ -1016,6 +1016,7 @@ export function createScreens(root: HTMLElement): Screens {
   pauseBtn.setAttribute('aria-label', 'Pause');
   pauseBtn.append(icon('pause'));
   let onPauseCb: (() => void) | null = null;
+  let overtakeHook: (() => void) | null = null;
   pauseBtn.addEventListener('click', () => onPauseCb?.());
   hud.append(area, pauseBtn, boardBox, alerts, shieldToast, steerHint, minimapWrap);
   let hudColor = -1;
@@ -1377,7 +1378,7 @@ export function createScreens(root: HTMLElement): Screens {
       }
       return out;
     },
-    showHud(onPause) {
+    showHud(onPause, onOvertake) {
       for (const r of rowEls) { r.root.hidden = true; r.key = ''; r.id = -1; }
       resetBoardFx();
       pctTween.snap(0);
@@ -1397,6 +1398,7 @@ export function createScreens(root: HTMLElement): Screens {
       syncAll();
       only(hud);
       onPauseCb = onPause;
+      overtakeHook = onOvertake ?? null;
     },
     showPause(handlers) {
       if (offer) return; // the revive offer owns the screen
@@ -1487,6 +1489,7 @@ export function createScreens(root: HTMLElement): Screens {
         lastToastAt = now;
         showToast(ch.overtaken);
         playSound('overtake');
+        overtakeHook?.();
       }
       const upOn = now < upUntil;
       for (let i = 0; i < rows.length; i++) {

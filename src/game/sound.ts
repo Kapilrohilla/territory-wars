@@ -175,12 +175,36 @@ export function musicBus(): GainNode | null {
   return musicNode;
 }
 
-/** Briefly dips the music (to 0.6×, back within 0.25 s) so a big effect cuts through it. */
+let duckTimer: ReturnType<typeof setTimeout> | null = null;
+const DUCK_HOLD_MS = 100;
+
+/** Cancels the param's automation after `t`, keeping its current value (mid-ramp included). */
+function holdParam(p: AudioParam, t: number): void {
+  if (typeof p.cancelAndHoldAtTime === 'function') p.cancelAndHoldAtTime(t);
+  else {
+    const v = p.value;
+    p.cancelScheduledValues(t);
+    p.setValueAtTime(v, t);
+  }
+}
+
+/**
+ * Briefly dips the music (to 0.6x, back within 0.25 s) so a big effect cuts through it. A new
+ * duck replaces the one in flight, and the restore reads the live music level when it is
+ * scheduled, so a slider change during the dip isn't reverted.
+ */
 export function duckMusic(): void {
   if (!ctx || !musicNode) return;
-  const t = ctx.currentTime;
-  musicNode.gain.setTargetAtTime(musicLevel() * 0.6, t, 0.015);
-  musicNode.gain.setTargetAtTime(musicLevel(), t + 0.1, 0.04);
+  const node = musicNode;
+  const c = ctx;
+  holdParam(node.gain, c.currentTime);
+  node.gain.setTargetAtTime(musicLevel() * 0.6, c.currentTime, 0.015);
+  if (duckTimer !== null) clearTimeout(duckTimer);
+  duckTimer = setTimeout(() => {
+    duckTimer = null;
+    holdParam(node.gain, c.currentTime);
+    node.gain.setTargetAtTime(musicLevel(), c.currentTime, 0.04);
+  }, DUCK_HOLD_MS);
 }
 
 export function isDirectional(): boolean {
