@@ -1,3 +1,5 @@
+import { getImpact, IMPACT_KEY, type SettingsStore } from '../ui/settings';
+
 /**
  * Knockout "impact" timing: the hit-stop (freeze-frame) on a human kill and the slow-mo on
  * the human's own down. Pure scheduling; the session drives it with real-time ms stamps.
@@ -15,20 +17,11 @@ const DOWN_EASE_MS = 150;
 export const DOWN_DELAY_MS = 600;
 
 /** localStorage flag for the "Screen shake & freeze-frames" setting; anything but '0' is on. */
-export const IMPACT_KEY = 'territory-wars.impact';
+export { IMPACT_KEY };
 
-type FlagStore = { getItem(key: string): string | null };
-
-/**
- * The "screen shake & freeze-frames" setting (Task 7 adds its toggle). On when storage is
- * unavailable; storage is looked up inside the try, since touching blocked localStorage throws.
- */
-export function impactEnabled(store?: FlagStore): boolean {
-  try {
-    return (store ?? globalThis.localStorage)?.getItem(IMPACT_KEY) !== '0';
-  } catch {
-    return true;
-  }
+/** The "screen shake & freeze-frames" setting (ui/settings.ts); on when storage is unavailable. */
+export function impactEnabled(store?: SettingsStore): boolean {
+  return getImpact(store);
 }
 
 export type HitStop = {

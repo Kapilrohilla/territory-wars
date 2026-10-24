@@ -586,6 +586,65 @@ button:focus-visible,
 .tw-setting[aria-checked="true"] .tw-switch { background: var(--revive); box-shadow: inset 0 0 0 2px var(--revive-lip); }
 .tw-setting[aria-checked="true"] .tw-switch::after { transform: translateX(24px); }
 
+/* ---------- records: Sound & Feel ---------- */
+
+/* A switch with a line of help under its label. */
+.tw-setting-helped { min-height: 76px; padding-top: 10px; padding-bottom: 10px; }
+.tw-setting-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.tw-setting-sub { font: 600 15px var(--font-body); color: var(--ink-muted); }
+/* The volume slider: a chunky periwinkle track filled up to the value, a round thumb with a lip. */
+.tw-setting-slider { box-sizing: border-box; cursor: default; min-height: 84px; }
+.tw-slider-body { display: flex; flex: 1; flex-direction: column; gap: 10px; min-width: 0; }
+.tw-slider-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.tw-slider-value { font: 800 16px var(--font-display); color: var(--ink-muted); }
+.tw-slider {
+  --fill: 80%;
+  width: 100%;
+  height: 32px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  touch-action: pan-y;
+}
+.tw-slider::-webkit-slider-runnable-track {
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--periwinkle) var(--fill), #e9e7e1 var(--fill));
+  box-shadow: inset 0 0 0 2px rgba(52, 50, 63, 0.1);
+}
+.tw-slider::-moz-range-track {
+  height: 12px;
+  border-radius: 999px;
+  background: #e9e7e1;
+  box-shadow: inset 0 0 0 2px rgba(52, 50, 63, 0.1);
+}
+.tw-slider::-moz-range-progress { height: 12px; border-radius: 999px; background: var(--periwinkle); }
+.tw-slider::-webkit-slider-thumb {
+  width: 28px;
+  height: 28px;
+  margin-top: -8px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--card);
+  box-shadow: 0 3px 0 var(--periwinkle-lip), inset 0 0 0 3px var(--periwinkle);
+  -webkit-appearance: none;
+  appearance: none;
+}
+.tw-slider::-moz-range-thumb {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--card);
+  box-shadow: 0 3px 0 var(--periwinkle-lip), inset 0 0 0 3px var(--periwinkle);
+}
+.tw-slider:focus-visible { outline: none; }
+.tw-slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 3px 0 var(--periwinkle-lip), inset 0 0 0 3px var(--periwinkle), var(--focus); }
+.tw-slider:focus-visible::-moz-range-thumb { box-shadow: 0 3px 0 var(--periwinkle-lip), inset 0 0 0 3px var(--periwinkle), var(--focus); }
+.tw-btn.tw-test-sounds { margin-top: 16px; margin-bottom: 8px; }
+
 .tw-records-foot {
   margin: 24px 0 8px;
   text-align: center;

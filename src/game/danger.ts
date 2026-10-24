@@ -8,11 +8,12 @@ import { distPointSeg } from '../sim/geometry';
 import { landContains } from '../sim/territory';
 import type { Burn, World } from '../sim/types';
 import { trailLength } from '../sim/world';
+import { DANGER_WARNINGS_KEY, getDangerWarnings, type SettingsStore } from '../ui/settings';
 
 /** Danger at or above this shows the "Far from home" pill and starts the heartbeat. */
 export const DANGER_SHOW = 0.35;
 /** localStorage flag for the "danger warnings" setting; anything but '0' is on. */
-export const DANGER_WARNINGS_KEY = 'territory-wars.dangerWarnings';
+export { DANGER_WARNINGS_KEY };
 
 /** Trail exposure: none up to TRAIL_SAFE u of trail, full at TRAIL_SAFE + TRAIL_SPAN. */
 const TRAIL_SAFE = 6;
@@ -23,18 +24,9 @@ const RIVAL_SPAN = 12;
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-type FlagStore = { getItem(key: string): string | null };
-
-/**
- * The "danger warnings" setting (Task 7 adds its toggle). On when storage is unavailable;
- * storage is looked up inside the try, since touching blocked localStorage throws.
- */
-export function dangerWarningsEnabled(store?: FlagStore): boolean {
-  try {
-    return (store ?? globalThis.localStorage)?.getItem(DANGER_WARNINGS_KEY) !== '0';
-  } catch {
-    return true;
-  }
+/** The "danger warnings" setting (ui/settings.ts); on when storage is unavailable. */
+export function dangerWarningsEnabled(store?: SettingsStore): boolean {
+  return getDangerWarnings(store);
 }
 
 /** The human is out of its land with a live trail (not home, not down, not over). */

@@ -58,6 +58,9 @@ export const ICONS = {
   'home': 'M3.5 10.5L12 3.5l8.5 7V20a.5.5 0 0 1-.5.5h-5v-6h-6v6H4a.5.5 0 0 1-.5-.5z',
   'trend': 'M3 17l6-6 4 4 8-8M15 7h6v6',
   'id': 'M3.5 6h17v13h-17zM9 13a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM5.8 17c.8-1.7 5.6-1.7 6.4 0M14.5 10h3.5M14.5 14h3.5',
+  'headphones': 'M4 17v-4a8 8 0 0 1 16 0v4M4 14.5h3.5v6H4zM16.5 14.5H20v6h-3.5z',
+  'warning': 'M12 3.5L21.5 20h-19zM12 10v4.5M12 17.5h.01',
+  'shake': 'M8.5 4.5h7v15h-7zM4.5 8l-2 2 2 2-2 2M19.5 8l2 2-2 2 2 2',
 } as const;
 export type IconName = keyof typeof ICONS;
 

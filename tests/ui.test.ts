@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   dangerSegments, heartbeatSeconds,
   buildLeaderboard, rankChanges, overtakeToastText, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
-  highestBest, hudAlerts, milestoneRibbonText, streakChipText, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
+  createRateLimit, PREVIEW_TICK_MS, TEST_SOUNDS, highestBest, hudAlerts, milestoneRibbonText, streakChipText, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
 import { isVibrationOn, setVibrationOn } from '../src/native/platform';
 import { COLOR_NAMES, PALETTE } from '../src/game/palette';
@@ -336,5 +336,27 @@ describe('overtakeToastText', () => {
   it('names one rival, counts several', () => {
     expect(overtakeToastText([{ name: 'Mango' }])).toBe('You passed Mango!');
     expect(overtakeToastText([{ name: 'A' }, { name: 'B' }])).toBe('You passed 2 rivals!');
+  });
+});
+
+describe('volume preview tick', () => {
+  it('fires at most once per PREVIEW_TICK_MS while dragging', () => {
+    const ok = createRateLimit(PREVIEW_TICK_MS);
+    expect(PREVIEW_TICK_MS).toBeGreaterThanOrEqual(80);
+    expect(ok(1000)).toBe(true);
+    expect(ok(1000 + PREVIEW_TICK_MS - 1)).toBe(false);
+    expect(ok(1000 + PREVIEW_TICK_MS)).toBe(true);
+    expect(ok(1000 + PREVIEW_TICK_MS + 10)).toBe(false);
+  });
+});
+
+describe('Test sounds', () => {
+  it('plays capture → cut → kill with short gaps', () => {
+    expect(TEST_SOUNDS.map((t) => t.name)).toEqual(['capture', 'cut', 'kill']);
+    for (let i = 1; i < TEST_SOUNDS.length; i++) {
+      const gap = TEST_SOUNDS[i].atMs - TEST_SOUNDS[i - 1].atMs;
+      expect(gap).toBeGreaterThanOrEqual(300);
+      expect(gap).toBeLessThanOrEqual(800);
+    }
   });
 });

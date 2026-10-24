@@ -1,5 +1,8 @@
 import { COLOR_NAMES, PALETTE } from '../game/palette';
-import { isMuted, playSelect, playSound, playTick, setMuted, unlockAudio } from '../game/sound';
+import {
+  getVolume, isDirectional, isMuted, playSelect, playSound, playTick, setDirectional, setMuted, setVolume, unlockAudio,
+  type SoundName, type SoundOpts,
+} from '../game/sound';
 import { isNative, isVibrationOn, setVibrationOn } from '../native/platform';
 import { NAMES } from '../sim/names';
 import { pct } from '../sim/world';
@@ -8,6 +11,7 @@ import type { DeathCause, Player, World } from '../sim/types';
 import type { BestScore } from './best';
 import { button, el, icon, labelRow, setText, statTile, svg, type IconName } from './dom';
 import type { Lifetime } from './progress';
+import { getDangerWarnings, getImpact, safeStorage, setDangerWarnings, setImpact } from './settings';
 import { createSkinsScreen, paintSkin, type SkinsView } from './skinsScreen';
 import type { Skin } from '../game/skins';
 import { DANGER_SHOW } from '../game/danger';
@@ -204,7 +208,7 @@ export function highestBest(bests: Partial<Record<Difficulty, BestScore | null>>
 type FlagStore = Pick<Storage, 'getItem' | 'setItem'> | undefined;
 
 /** A '1'/'0' setting in storage; `fallback` when unset or storage is unavailable. */
-export function readFlag(key: string, fallback: boolean, store: FlagStore = globalThis.localStorage): boolean {
+export function readFlag(key: string, fallback: boolean, store: FlagStore = safeStorage()): boolean {
   try {
     const v = store?.getItem(key);
     return v === '1' ? true : v === '0' ? false : fallback;
@@ -213,13 +217,13 @@ export function readFlag(key: string, fallback: boolean, store: FlagStore = glob
   }
 }
 
-export function writeFlag(key: string, on: boolean, store: FlagStore = globalThis.localStorage): void {
+export function writeFlag(key: string, on: boolean, store: FlagStore = safeStorage()): void {
   try { store?.setItem(key, on ? '1' : '0'); } catch { /* storage unavailable */ }
 }
 
 /** One of `options` from storage; `fallback` when unset, unknown or storage is unavailable. */
 export function readChoice<T extends string>(key: string, options: readonly T[], fallback: T,
-  store: FlagStore = globalThis.localStorage): T {
+  store: FlagStore = safeStorage()): T {
   try {
     const v = store?.getItem(key);
     return v !== null && v !== undefined && (options as readonly string[]).includes(v) ? (v as T) : fallback;
@@ -228,7 +232,7 @@ export function readChoice<T extends string>(key: string, options: readonly T[],
   }
 }
 
-export function writeChoice(key: string, value: string, store: FlagStore = globalThis.localStorage): void {
+export function writeChoice(key: string, value: string, store: FlagStore = safeStorage()): void {
   try { store?.setItem(key, value); } catch { /* storage unavailable */ }
 }
 
@@ -254,6 +258,29 @@ export function randomName(current: string, rand: () => number = Math.random, na
 }
 
 export const REDUCED_MOTION_KEY = 'territory-wars.reduced-motion';
+
+/** Dragging the volume slider plays a preview tick at most this often (ms). */
+export const PREVIEW_TICK_MS = 120;
+
+/** A gate that opens at most once per `ms` (given monotonic timestamps in ms). */
+export function createRateLimit(ms: number): (nowMs: number) => boolean {
+  let last = -Infinity;
+  return (now) => {
+    if (now - last < ms) return false;
+    last = now;
+    return true;
+  };
+}
+
+/**
+ * The "Test sounds" button: a capture, a cut and a knockout with short gaps. The first waits
+ * a moment so a context just created (and resumed) by the same click is running by then.
+ */
+export const TEST_SOUNDS: readonly { name: SoundName; atMs: number; opts?: SoundOpts }[] = [
+  { name: 'capture', atMs: 80, opts: { pct: 2 } },
+  { name: 'cut', atMs: 620 },
+  { name: 'kill', atMs: 1000 },
+];
 
 /** The steering hint fades out after this many seconds of play. */
 export const HINT_SECONDS = 8;
@@ -609,18 +636,75 @@ export function createScreens(root: HTMLElement): Screens {
   let minimapOn = readFlag(MINIMAP_KEY, true);
   const settingsList = el('div', 'tw-settings');
   const settingRow = (name: IconName, label: string, get: () => boolean, set: (on: boolean) => void,
-    parent: HTMLElement = settingsList) => {
+    parent: HTMLElement = settingsList, helper?: string) => {
     const b = button('tw-setting');
     b.setAttribute('role', 'switch');
     const knob = el('span', 'tw-switch');
     knob.setAttribute('aria-hidden', 'true');
-    b.append(icon(name), el('span', 'tw-setting-label', label), knob);
+    if (helper) {
+      // A label with a line of help under it (the switch's accessible name is the whole text).
+      const text = el('span', 'tw-setting-text');
+      text.append(el('span', 'tw-setting-label', label), el('span', 'tw-setting-sub', helper));
+      b.classList.add('tw-setting-helped');
+      b.append(icon(name), text, knob);
+    } else {
+      b.append(icon(name), el('span', 'tw-setting-label', label), knob);
+    }
     b.addEventListener('click', () => { set(!get()); syncAll(); });
     toggles.push({ btn: b, sync: () => b.setAttribute('aria-checked', String(get())) });
     parent.append(b);
   };
-  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); });
-  settingRow('vibrate', 'Vibration', isVibrationOn, (on) => setVibrationOn(on));
+  // Sound & Feel: audio and game-feel switches in their own card, above the general settings.
+  const feelList = el('div', 'tw-settings tw-feel');
+  settingRow('sound', 'Sound effects', () => !isMuted(), (on) => { unlockAudio(); setMuted(!on); playTick(); }, feelList);
+  // Volume: 0–100, scaling the master gain (mute still wins). Dragging previews with a tick.
+  const volRow = el('div', 'tw-setting tw-setting-slider');
+  const volInput = el('input', 'tw-slider');
+  volInput.type = 'range';
+  volInput.min = '0';
+  volInput.max = '100';
+  volInput.step = '1';
+  volInput.id = 'tw-volume';
+  const volValue = el('span', 'tw-slider-value tw-num');
+  const volLabel = el('label', 'tw-setting-label', 'Volume');
+  volLabel.htmlFor = 'tw-volume';
+  const volTop = el('span', 'tw-slider-top');
+  volTop.append(volLabel, volValue);
+  const volBody = el('span', 'tw-slider-body');
+  volBody.append(volTop, volInput);
+  volRow.append(icon('sound'), volBody);
+  feelList.append(volRow);
+  const showVolume = (v: number) => {
+    volInput.value = String(v);
+    volInput.style.setProperty('--fill', `${v}%`);
+    setText(volValue, `${v}%`);
+  };
+  showVolume(getVolume());
+  const previewOk = createRateLimit(PREVIEW_TICK_MS);
+  const previewTick = () => {
+    unlockAudio();
+    if (previewOk(performance.now())) playTick();
+  };
+  volInput.addEventListener('input', () => {
+    const v = Number(volInput.value);
+    setVolume(v);
+    showVolume(getVolume());
+    previewTick();
+  });
+  settingRow('headphones', 'Directional sound', isDirectional, (on) => { setDirectional(on); playTick(); }, feelList,
+    'Hear fights off-screen from the side they happen');
+  settingRow('vibrate', 'Vibration', isVibrationOn, (on) => setVibrationOn(on), feelList);
+  settingRow('warning', 'Danger warnings', () => getDangerWarnings(), (on) => setDangerWarnings(on), feelList,
+    'Edge arrows and heartbeat when rivals near your trail');
+  settingRow('shake', 'Screen shake & freeze-frames', () => getImpact(), (on) => setImpact(on), feelList);
+  const testBtn = button('tw-btn tw-btn-secondary tw-test-sounds');
+  testBtn.append(icon('sound'), el('span', undefined, 'Test sounds'));
+  let testTimers: number[] = [];
+  testBtn.addEventListener('click', () => {
+    unlockAudio(); // inside the click gesture
+    for (const t of testTimers) clearTimeout(t);
+    testTimers = TEST_SOUNDS.map((t) => window.setTimeout(() => playSound(t.name, t.opts), t.atMs));
+  });
   settingRow('motion-off', 'Reduced motion', () => reducedPref, (on) => {
     reducedPref = on;
     writeFlag(REDUCED_MOTION_KEY, on);
@@ -679,6 +763,7 @@ export function createScreens(root: HTMLElement): Screens {
     el('div', undefined, 'No in-app purchases · Ad-supported fair play'));
   recInner.append(recHead, sectionHead('trophy', 'Personal bests'), bestList,
     el('h3', 'tw-section-label', 'Lifetime career'), lifeTiles,
+    sectionHead('sound', 'Sound & Feel'), feelList, testBtn,
     sectionHead('gear', 'Settings'), settingsList, recFoot);
   records.append(recInner);
   let onBackCb: (() => void) | null = null;

@@ -9,7 +9,7 @@ import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
 import { drawMinimap } from './minimap';
 import { createSfxState, soundsFor, type Cue } from './sfxEvents';
-import { playSound } from './sound';
+import { currentListener, playSound, setListener } from './sound';
 import { createFx, interpPos, prefersReducedMotion, render, snapshotFx, type Fx } from './render';
 import { createMoodState, moodEvents, moodOf } from './moods';
 import { botSkin, faceFor, skinById } from './skins';
@@ -186,6 +186,8 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   // Camera must be placed before the first paint.
   camera.update(world.players[world.humanId].pos, pct(world, world.humanId), 0);
   resize();
+  // Directional sound: positioned cues are heard from this camera and the human's head.
+  setListener(camera, () => world.players[world.humanId].pos);
   window.addEventListener('resize', resize);
 
   let lastFrame: number | null = null;
@@ -268,7 +270,8 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     tension.update(world, dt, danger);
     if (danger.warnings) findThreats(world, threats);
     else threats.length = 0;
-    if (tickThreatAlert(threatAlert, threats, dt)) playSound('alert');
+    // Heard from the side the rival is coming from (threats[0] is the one it fired for).
+    if (tickThreatAlert(threatAlert, threats, dt)) playSound('alert', { at: threats[0].pos });
     // Frozen behind the revive modal with no effect left to play: the frame is static under
     // the blurred overlay, so skip repainting it (resize still repaints). Painting resumes
     // after revive()/giveUp(), which clear awaitingRevive.
@@ -350,6 +353,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       hitStop.clear();
       stop();
       tension.dispose();
+      if (currentListener() === camera) setListener(null);
       window.removeEventListener('resize', resize);
       disposeInput();
     },

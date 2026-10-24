@@ -5,6 +5,8 @@
  * or muted.
  */
 import type { Difficulty } from '../sim/config';
+import type { Vec } from '../sim/geometry';
+import { getDirectional, getSfxVolume, setDirectional as storeDirectional, setSfxVolume } from '../ui/settings';
 
 export type SoundName =
   | 'capture'    // you closed a loop (scaled by `pct`)
@@ -41,13 +43,23 @@ export type SoundOpts = {
   gain?: number;
   /** Seconds to wait before the sound starts (to sequence sounds in one step). */
   delay?: number;
+  /**
+   * Where it happened in the world. With a listener set (setListener) the cue is panned
+   * toward its side of the screen and, when off-screen, quieter with distance.
+   */
+  at?: Vec;
 };
 
 /** Every voice stays under this peak gain. */
 export const MAX_GAIN = 0.09;
 
 const MUTE_KEY = 'territory-wars.muted';
-const MASTER_GAIN = 0.9;
+/** Master gain at 100 % volume. */
+export const MASTER_GAIN = 0.9;
+/** Stereo spread: an event at the screen edge pans this far (not hard left/right). */
+export const PAN_MAX = 0.7;
+/** Positioned cues quieter than this (far off-screen) are not played at all. */
+const MIN_SPATIAL_GAIN = 0.01;
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
@@ -55,6 +67,9 @@ let failed = false;
 /** Added to every voice's start time while a sound is being built (SoundOpts.delay). */
 let offset = 0;
 let muted = loadMuted();
+/** The sound effects volume as a 0..1 factor on MASTER_GAIN (the 0–100 slider / 100). */
+let volume = volumeToGain(getSfxVolume());
+let directional = getDirectional();
 
 type AudioCtor = { new (): AudioContext };
 
@@ -73,7 +88,91 @@ export function isMuted(): boolean {
 export function setMuted(m: boolean): void {
   muted = m;
   try { globalThis.localStorage?.setItem(MUTE_KEY, m ? '1' : '0'); } catch { /* storage unavailable */ }
-  if (master && ctx) master.gain.setTargetAtTime(m ? 0 : MASTER_GAIN, ctx.currentTime, 0.02);
+  applyMaster();
+}
+
+/** The 0–100 volume slider as a gain factor 0..1 (linear, clamped; NaN → the 80 default). */
+export function volumeToGain(v: number): number {
+  if (!Number.isFinite(v)) return 0.8;
+  return v <= 0 ? 0 : v >= 100 ? 1 : v / 100;
+}
+
+/** The master gain now: 0 when muted, else MASTER_GAIN × volume. */
+export function masterLevel(): number {
+  return muted ? 0 : MASTER_GAIN * volume;
+}
+
+function applyMaster(): void {
+  if (master && ctx) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02);
+}
+
+/** Current sound effects volume, 0–100. */
+export function getVolume(): number {
+  return Math.round(volume * 100);
+}
+
+/** Sets (and saves) the sound effects volume, 0–100. Mute still overrides it. */
+export function setVolume(v: number): void {
+  volume = volumeToGain(v);
+  setSfxVolume(v);
+  applyMaster();
+}
+
+export function isDirectional(): boolean {
+  return directional;
+}
+
+/** Turns (and saves) directional sound; off, every cue plays centred. */
+export function setDirectional(on: boolean): void {
+  directional = on;
+  storeDirectional(on);
+}
+
+// ---------- directional sound ----------
+
+/** What a positioned cue is heard against: the camera (screen space) and the human's head. */
+export type ListenerView = { viewW: number; viewH: number; worldToScreen(p: Vec): Vec };
+let listenerView: ListenerView | null = null;
+let listenerHead: (() => Vec) | null = null;
+
+/**
+ * Sets what positioned cues are heard from (the session's camera and the human's head), or
+ * clears it with null; without one every cue plays centred at full level.
+ */
+export function setListener(view: ListenerView | null, head?: () => Vec): void {
+  listenerView = view;
+  listenerHead = view && head ? head : null;
+}
+
+/** The view a listener was set with (so a session only clears its own). */
+export function currentListener(): ListenerView | null {
+  return listenerView;
+}
+
+/** Stereo pan for a screen x: clamp((x − w/2)/(w/2), −1, 1) · PAN_MAX; 0 when degenerate. */
+export function panFor(screenX: number, width: number): number {
+  if (!(width > 0) || !Number.isFinite(screenX)) return 0;
+  const half = width / 2;
+  const u = (screenX - half) / half;
+  return (u < -1 ? -1 : u > 1 ? 1 : u) * PAN_MAX;
+}
+
+/** Level of an off-screen event `d` world units from the head: clamp01(1.4 − d/60). */
+export function distanceGain(d: number): number {
+  return clamp01(1.4 - d / 60);
+}
+
+/**
+ * How a cue at world point `at` sounds: panned by its screen x (0 with directional off) and,
+ * only when it is off-screen, attenuated by its world distance from the head.
+ */
+export function spatialFor(at: Vec, view: ListenerView, head: Vec, dir: boolean): { pan: number; gain: number } {
+  const s = view.worldToScreen(at);
+  const onScreen = s.x >= 0 && s.x <= view.viewW && s.y >= 0 && s.y <= view.viewH;
+  return {
+    pan: dir ? panFor(s.x, view.viewW) : 0,
+    gain: onScreen ? 1 : distanceGain(Math.hypot(at.x - head.x, at.y - head.y)),
+  };
 }
 
 /** Call from a user-gesture handler (a click or key press). Safe to call repeatedly. */
@@ -86,7 +185,7 @@ export function unlockAudio(): void {
       if (!Ctor) { failed = true; return; }
       ctx = new Ctor();
       master = ctx.createGain();
-      master.gain.value = muted ? 0 : MASTER_GAIN;
+      master.gain.value = masterLevel();
       master.connect(ctx.destination);
     }
     if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
@@ -363,10 +462,49 @@ const SOUNDS: Record<SoundName, Synth> = {
 /** Difficulty pick: a soft click whose pitch rises Easy → Normal → Hard. */
 const SELECT_SEMI: Record<Difficulty, number> = { easy: -5, normal: 2, hard: 9 };
 
+/** Longest any one sound rings past its start (s), beyond a capture sweep's own length. */
+const SOUND_TAIL_S = 1.5;
+
+/**
+ * Where a positioned cue's voices go: a per-cue gain (distance) into a StereoPannerNode
+ * into the master. Falls back to the gain alone when panners are unsupported. Returns null
+ * when the cue is too far to hear. The bus is disconnected once the sound is over.
+ */
+function spatialBus(c: AudioContext, out: AudioNode, o: SoundOpts): AudioNode | null {
+  const at = o.at;
+  if (!at || !listenerView || !listenerHead) return out;
+  const sp = spatialFor(at, listenerView, listenerHead(), directional);
+  if (sp.gain < MIN_SPATIAL_GAIN) return null;
+  const bus = c.createGain();
+  bus.gain.value = sp.gain;
+  let panner: StereoPannerNode | null = null;
+  try {
+    const make = (c as Partial<Pick<AudioContext, 'createStereoPanner'>>).createStereoPanner;
+    if (make) {
+      panner = make.call(c);
+      panner.pan.value = sp.pan;
+    }
+  } catch { panner = null; /* unsupported: level only */ }
+  if (panner) {
+    bus.connect(panner);
+    panner.connect(out);
+  } else {
+    bus.connect(out);
+  }
+  const lifeS = offset + (o.durationS ?? 0) + SOUND_TAIL_S;
+  setTimeout(() => {
+    try { bus.disconnect(); panner?.disconnect(); } catch { /* already gone */ }
+  }, lifeS * 1000);
+  return bus;
+}
+
 function play(fn: Synth, o: SoundOpts = {}): void {
   if (muted || !ctx || !master || ctx.state !== 'running') return;
   offset = Math.max(0, o.delay ?? 0);
-  try { fn(ctx, master, o); } catch { /* ignore */ } finally { offset = 0; }
+  try {
+    const out = spatialBus(ctx, master, o);
+    if (out) fn(ctx, out, o);
+  } catch { /* ignore */ } finally { offset = 0; }
 }
 
 export function playSound(name: SoundName, opts?: SoundOpts): void {
