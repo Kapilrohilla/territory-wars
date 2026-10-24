@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createDangerState, type DangerState } from '../src/game/danger';
 import type { SoundName } from '../src/game/sound';
 import { createWorld } from '../src/sim/world';
+import { CAPTURE_AFTER_STEAL_S, ESCAPE_AFTER_CAPTURE_S } from '../src/game/sfxEvents';
 import {
   createTension, TENSION_MIN, beatGain, beatInterval, burnVignetteAlpha, crackleInterval, createTensionClock, tickTension,
 } from '../src/game/tension';
@@ -129,6 +130,29 @@ describe('createTension', () => {
     t.heard('escape');
     t.update(w, 1 / 60, d);
     expect(played).toEqual([]);
+  });
+
+  it('delays the relief chime after a capture chord heard this step, like sfxEvents does', () => {
+    const relief = (captureDelay: number | null) => {
+      const w = createWorld({ seed: 1, humanName: 'T', humanColor: 0 });
+      const played: { name: SoundName; delay?: number }[] = [];
+      const t = createTension((name, o) => played.push({ name, delay: o?.delay }));
+      const d: DangerState = createDangerState(true);
+      const h = w.players[w.humanId];
+      h.trail = [{ x: 0, y: 0 }];
+      d.level = 0.5;
+      t.update(w, 1 / 60, d);
+      h.trail = [];
+      d.level = 0;
+      played.length = 0;
+      if (captureDelay !== null) t.heard('capture', captureDelay);
+      t.update(w, 1 / 60, d);
+      expect(played.map((p) => p.name)).toEqual(['escape']);
+      return played[0].delay ?? 0;
+    };
+    expect(relief(null)).toBe(0); // no capture: right away
+    expect(relief(0)).toBeCloseTo(ESCAPE_AFTER_CAPTURE_S, 9);
+    expect(relief(CAPTURE_AFTER_STEAL_S)).toBeCloseTo(CAPTURE_AFTER_STEAL_S + ESCAPE_AFTER_CAPTURE_S, 9);
   });
 
   it('is silent while awaiting revive, after the end and once disposed', () => {

@@ -13,8 +13,8 @@ export const STREAK_WINDOW_S = 8;
 export const MILESTONES = [10, 25, 50];
 
 /** Steal swipe first, then the capture chord, then the relief chime, then any fanfare. */
-const CAPTURE_AFTER_STEAL_S = 0.07;
-const ESCAPE_AFTER_CAPTURE_S = 0.12;
+export const CAPTURE_AFTER_STEAL_S = 0.07;
+export const ESCAPE_AFTER_CAPTURE_S = 0.12;
 const MILESTONE_AFTER_CAPTURE_S = 0.28;
 
 /**

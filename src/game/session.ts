@@ -220,7 +220,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     // Every step, even a silent one: the revive shield's end is a state edge, not an event.
     for (const cue of soundsFor(world.events, world, sfx)) {
       playSound(cue.name, cue);
-      tension.heard(cue.name);
+      tension.heard(cue.name, cue.delay);
       opts.onCue?.(cue);
     }
   };

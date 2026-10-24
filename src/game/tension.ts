@@ -4,6 +4,7 @@
  * and driven by real time; createTension wires it to sound for one session.
  */
 import { DANGER_SHOW, type DangerState } from './danger';
+import { ESCAPE_AFTER_CAPTURE_S } from './sfxEvents';
 import { playSound, type SoundName, type SoundOpts } from './sound';
 import type { World } from '../sim/types';
 
@@ -73,8 +74,11 @@ export function tickTension(c: TensionClock, danger: number, burn: number | null
 export type Tension = {
   /** Call once per rendered frame with real elapsed seconds and this frame's danger sample. */
   update(world: World, dt: number, danger: DangerState): void;
-  /** Tell it a cue played from this step's events (an 'escape' then suppresses the relief chime). */
-  heard(name: SoundName): void;
+  /**
+   * Tell it a cue played from this step's events, with its delay (s): an 'escape' then
+   * suppresses the relief chime, and a 'capture' pushes it after the chord, as sfxEvents does.
+   */
+  heard(name: SoundName, delay?: number): void;
   /** Stops scheduling for good. Beats already playing are one-shots and end on their own. */
   dispose(): void;
 };
@@ -88,6 +92,9 @@ export function createTension(play: Play = playSound): Tension {
   /** Danger of the last update, to catch the drop to 0 on reaching home. */
   let prev = 0;
   let escapeHeard = false;
+  /** Delay of a capture chord heard this step, or -1. */
+  let captureAt = -1;
+  const reliefOpts: SoundOpts = { delay: 0 };
   let disposed = false;
 
   return {
@@ -99,6 +106,7 @@ export function createTension(play: Play = playSound): Tension {
         clock.beatIn = clock.crackleIn = 0;
         prev = 0;
         escapeHeard = false;
+        captureAt = -1;
         return;
       }
       tickTension(clock, d.level, d.burn, dt);
@@ -112,14 +120,18 @@ export function createTension(play: Play = playSound): Tension {
         play('crackle', crackleOpts);
       }
       // Relief: made it home from real danger (an escape chime this step already covers it).
+      // After a capture chord this step, it follows the chord instead of clashing with it.
       if (d.warnings && prev >= TENSION_MIN && d.level === 0 && h.trail.length === 0 && !escapeHeard) {
-        play('escape');
+        reliefOpts.delay = captureAt >= 0 ? captureAt + ESCAPE_AFTER_CAPTURE_S : 0;
+        play('escape', reliefOpts);
       }
       prev = d.level;
       escapeHeard = false;
+      captureAt = -1;
     },
-    heard(name) {
+    heard(name, delay = 0) {
       if (name === 'escape') escapeHeard = true;
+      else if (name === 'capture') captureAt = delay;
     },
     dispose() {
       disposed = true;
