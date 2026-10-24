@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   dangerSegments, heartbeatSeconds,
-  buildLeaderboard, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
+  buildLeaderboard, rankChanges, overtakeToastText, cleanName, countdownFraction, countdownSeconds, pausedRemaining, createPctTween, formatPct, formatTime,
   highestBest, hudAlerts, milestoneRibbonText, streakChipText, NAME_MAX, randomName, readChoice, readFlag, writeChoice, reviveSubtitle, territoryVerdict, writeFlag, type BoardEntry,
 } from '../src/ui/screens';
 import { isVibrationOn, setVibrationOn } from '../src/native/platform';
@@ -273,5 +273,68 @@ describe('streakChipText', () => {
   it('counts the kills in the streak from the second one on', () => {
     expect(streakChipText(2)).toBe('×2 STREAK');
     expect(streakChipText(3)).toBe('×3 STREAK');
+  });
+});
+
+describe('rankChanges', () => {
+  const rows = (...ents: BoardEntry[]) => buildLeaderboard(ents, ents.length);
+  const me = (pct: number) => e(0, pct, true);
+
+  it('passing one rival', () => {
+    const r = rankChanges(rows(me(4), e(1, 5), e(2, 3)), rows(me(6), e(1, 5), e(2, 3)));
+    expect(r.overtaken.map((o) => o.name)).toEqual(['P1']);
+    expect(r.humanDelta).toBe(1);
+  });
+
+  it('passing two rivals at once', () => {
+    const r = rankChanges(rows(me(1), e(1, 5), e(2, 3), e(3, 0.5)), rows(me(9), e(1, 5), e(2, 3), e(3, 0.5)));
+    expect(r.overtaken.map((o) => o.name).sort()).toEqual(['P1', 'P2']);
+    expect(r.humanDelta).toBe(2);
+  });
+
+  it('counts a pass between two rows that are both off the shown top 5', () => {
+    const others = [1, 2, 3, 4, 5, 6].map((i) => e(i, 10 + i));
+    const r = rankChanges(rows(me(1), ...others, e(9, 2)), rows(me(3), ...others, e(9, 2)));
+    expect(r.overtaken.map((o) => o.name)).toEqual(['P9']);
+  });
+
+  it('dropping reports a negative delta and no overtakes', () => {
+    const r = rankChanges(rows(me(6), e(1, 5)), rows(me(4), e(1, 5)));
+    expect(r.overtaken).toEqual([]);
+    expect(r.humanDelta).toBe(-1);
+  });
+
+  it('no change', () => {
+    const b = rows(me(4), e(1, 5), e(2, 3));
+    expect(rankChanges(b, b)).toEqual({ overtaken: [], humanDelta: 0 });
+  });
+
+  it('a rival above you dying is not an overtake', () => {
+    const r = rankChanges(rows(me(4), e(1, 5), e(2, 3)), rows(me(4), e(2, 3)));
+    expect(r.overtaken).toEqual([]);
+    expect(r.humanDelta).toBe(0);
+  });
+
+  it('a rival respawning below you is not an overtake', () => {
+    const r = rankChanges(rows(me(4), e(2, 3)), rows(me(4), e(2, 3), e(1, 0.1)));
+    expect(r.overtaken).toEqual([]);
+    expect(r.humanDelta).toBe(0);
+  });
+
+  it('matches by id, not name', () => {
+    const renamed = { ...e(1, 5), name: 'Newbie' };
+    const r = rankChanges(rows(me(4), e(1, 5)), rows(me(6), renamed));
+    expect(r.overtaken).toEqual([{ id: 1, name: 'Newbie', colorIndex: 1 }]);
+  });
+
+  it('the first refresh of a round (no previous board) reports nothing', () => {
+    expect(rankChanges([], rows(me(4), e(1, 5)))).toEqual({ overtaken: [], humanDelta: 0 });
+  });
+});
+
+describe('overtakeToastText', () => {
+  it('names one rival, counts several', () => {
+    expect(overtakeToastText([{ name: 'Mango' }])).toBe('You passed Mango!');
+    expect(overtakeToastText([{ name: 'A' }, { name: 'B' }])).toBe('You passed 2 rivals!');
   });
 });

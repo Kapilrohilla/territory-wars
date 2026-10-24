@@ -62,7 +62,7 @@ class FakeCtx {
 }
 
 const ALL: SoundName[] = ['capture', 'steal', 'cut', 'kill', 'burning', 'escape', 'down', 'revive',
-  'shieldDown', 'milestone', 'start', 'win', 'gameover', 'newBest', 'heartbeat', 'crackle', 'alert'];
+  'shieldDown', 'milestone', 'start', 'win', 'gameover', 'newBest', 'heartbeat', 'crackle', 'alert', 'overtake'];
 
 /** Envelopes (gain params ramped by a voice) scheduled while running fn. */
 function envelopes(fn: () => void): FakeParam[] {
@@ -147,5 +147,17 @@ describe('sound', () => {
     } finally {
       setMuted(false);
     }
+  });
+
+  it('overtake: a short soft rising tick in the phone-speaker band', () => {
+    const f = freqs(() => playSound('overtake'));
+    for (const hz of [...f.osc, ...f.filter]) {
+      expect(hz).toBeGreaterThanOrEqual(150);
+      expect(hz).toBeLessThanOrEqual(4000);
+    }
+    envelopes(() => playSound('overtake'));
+    expect(Math.max(...starts)).toBeLessThan(0.15);
+    expect(peak(envelopes(() => playSound('overtake')))).toBeLessThanOrEqual(0.07);
+    expect(f.osc[f.osc.length - 1]).toBeGreaterThan(f.osc[0]); // rising
   });
 });

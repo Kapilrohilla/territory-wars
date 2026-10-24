@@ -1,5 +1,5 @@
 import { COLOR_NAMES, PALETTE } from '../game/palette';
-import { isMuted, playSelect, playTick, setMuted, unlockAudio } from '../game/sound';
+import { isMuted, playSelect, playSound, playTick, setMuted, unlockAudio } from '../game/sound';
 import { isNative, isVibrationOn, setVibrationOn } from '../native/platform';
 import { NAMES } from '../sim/names';
 import { pct } from '../sim/world';
@@ -29,6 +29,42 @@ export function buildLeaderboard(entries: BoardEntry[], n = 5): BoardRow[] {
     if (you) top.push(you);
   }
   return top;
+}
+
+export type RankChange = { overtaken: { id: number; name: string; colorIndex: number }[]; humanDelta: number };
+
+/**
+ * What changed between two refreshes of the FULL ordering (pass `buildLeaderboard(entries, entries.length)`,
+ * not just the shown rows): the rivals the human passed (above before, below now) and how many places it
+ * moved up (negative = dropped). Rivals are matched by id, and only rivals on both boards count, so a rival
+ * dying or respawning (its row vanishing or appearing) is never an overtake. An empty `prev` (the first
+ * refresh of a round) reports nothing.
+ */
+export function rankChanges(prev: BoardRow[], next: BoardRow[]): RankChange {
+  const none: RankChange = { overtaken: [], humanDelta: 0 };
+  const youPrev = prev.find((r) => r.isHuman);
+  const youNext = next.find((r) => r.isHuman);
+  if (!youPrev || !youNext) return none;
+  const nextById = new Map<number, BoardRow>();
+  for (const r of next) nextById.set(r.id, r);
+  const overtaken: RankChange['overtaken'] = [];
+  let abovePrev = 0; // rivals on both boards above you before / now
+  let aboveNext = 0;
+  for (const r of prev) {
+    const n = nextById.get(r.id);
+    if (r.isHuman || !n) continue;
+    const wasAbove = r.rank < youPrev.rank;
+    const isAbove = n.rank < youNext.rank;
+    if (wasAbove) abovePrev++;
+    if (isAbove) aboveNext++;
+    if (wasAbove && !isAbove) overtaken.push({ id: n.id, name: n.name, colorIndex: n.colorIndex });
+  }
+  return overtaken.length || abovePrev !== aboveNext ? { overtaken, humanDelta: abovePrev - aboveNext } : none;
+}
+
+/** The overtake toast's words: the rival's name, or a count when you passed several at once. */
+export function overtakeToastText(passed: { name: string }[]): string {
+  return passed.length === 1 ? `You passed ${passed[0].name}!` : `You passed ${passed.length} rivals!`;
 }
 
 export function boardEntries(world: World): BoardEntry[] {
@@ -348,11 +384,16 @@ const KO_KEYS: Keyframe[] = [
   { transform: 'translateY(0) scale(1)', opacity: 1, offset: (KO_IN_MS + KO_HOLD_MS) / KO_MS },
   { transform: 'translateY(-18px) scale(0.95)', opacity: 0 },
 ];
+/** Leaderboard reactions: rows slide 280 ms; the "▲N" badge and glow last 1.2 s; the toast 1.6 s, one per 1.5 s. */
+const SLIDE_MS = 280;
+const UP_BADGE_MS = 1200;
+const TOAST_MS = 1600;
+const TOAST_GAP_MS = 1500;
 const RIBBON_SPECKS = 14;
 const SPECK_MS = 900;
 const SPECK_COLORS = ['#FFC93C', '#FF7A59', '#8DAAEC', '#2ED47A', '#F48FB1', '#C99A1E'];
 
-type RowEls = { root: HTMLElement; rank: HTMLElement; swatch: HTMLElement; name: HTMLElement; pct: HTMLElement; key: string };
+type RowEls = { root: HTMLElement; rank: HTMLElement; swatch: HTMLElement; name: HTMLElement; pct: HTMLElement; key: string; id: number };
 
 export function createScreens(root: HTMLElement): Screens {
   root.classList.add('tw-ui');
@@ -692,8 +733,47 @@ export function createScreens(root: HTMLElement): Screens {
     r.append(rank, swatch, name, p);
     r.hidden = true;
     board.append(r);
-    rowEls.push({ root: r, rank, swatch, name, pct: p, key: '' });
+    rowEls.push({ root: r, rank, swatch, name, pct: p, key: '', id: -1 });
   }
+  // Overtake reactions: a green "▲N" badge on your row, and a white toast pill under the board.
+  const upBadge = el('span', 'tw-up');
+  upBadge.hidden = true;
+  const toast = el('div', 'tw-toast');
+  toast.setAttribute('role', 'status');
+  const toastSwatch = el('span', 'tw-toast-swatch');
+  const toastText = el('span');
+  toast.append(toastSwatch, toastText);
+  toast.hidden = true;
+  boardBox.append(toast);
+  let prevBoard: BoardRow[] = [];
+  let upUntil = 0;
+  let lastToastAt = -Infinity;
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  const hideToast = () => {
+    if (toastTimer !== null) clearTimeout(toastTimer);
+    toastTimer = null;
+    toast.hidden = true;
+  };
+  const resetBoardFx = () => {
+    prevBoard = [];
+    upUntil = 0;
+    lastToastAt = -Infinity;
+    upBadge.hidden = true;
+    for (const r of rowEls) r.root.classList.remove('tw-up-glow');
+    hideToast();
+  };
+  const showToast = (passed: RankChange['overtaken']) => {
+    hideToast();
+    setText(toastText, overtakeToastText(passed));
+    toastSwatch.style.background = PALETTE.players[passed[0].colorIndex % PALETTE.players.length].base;
+    toast.hidden = false;
+    if (!reduceMotion() && typeof toast.animate === 'function') {
+      toast.animate(
+        [{ opacity: 0, transform: 'translateY(-8px) scale(0.95)' }, { opacity: 1, transform: 'none' }],
+        { duration: 180, easing: 'ease-out' });
+    }
+    toastTimer = setTimeout(hideToast, TOAST_MS);
+  };
   const crown = icon('crown-fill', 'tw-crown');
   crown.removeAttribute('aria-hidden');
   crown.setAttribute('role', 'img');
@@ -1176,7 +1256,8 @@ export function createScreens(root: HTMLElement): Screens {
       return out;
     },
     showHud(onPause) {
-      for (const r of rowEls) { r.root.hidden = true; r.key = ''; }
+      for (const r of rowEls) { r.root.hidden = true; r.key = ''; r.id = -1; }
+      resetBoardFx();
       pctTween.snap(0);
       setText(pctNum, '0.00');
       setText(killsNum, '0');
@@ -1235,10 +1316,24 @@ export function createScreens(root: HTMLElement): Screens {
       area.classList.toggle('tw-burning', a.burning);
       shieldToast.hidden = !a.shielded;
       steerHint.classList.toggle('tw-gone', steerBubbleRound || world.time > HINT_SECONDS);
-      const rows = buildLeaderboard(boardEntries(world));
+      const all = buildLeaderboard(boardEntries(world), Infinity);
+      const rows = all.slice(0, 5);
+      if (!rows.some((r) => r.isHuman)) { const you = all.find((r) => r.isHuman); if (you) rows.push(you); }
+
+      // FLIP: when a shown row lands in a different slot, slide it from its old slot (one layout
+      // read, only on a change of order). Row i is reused for whichever player now sits in slot i.
+      const still = reduceMotion() || typeof root.animate !== 'function';
+      let moved = false;
+      for (let i = 0; i < rows.length; i++) if (rowEls[i].id !== rows[i].id && rowEls[i].id !== -1) { moved = true; break; }
+      let pitch = 0;
+      if (moved && !still) {
+        pitch = rowEls[1].root.getBoundingClientRect().top - rowEls[0].root.getBoundingClientRect().top;
+      }
+
       rowEls.forEach((r, i) => {
         const row = rows[i];
-        if (!row) { r.root.hidden = true; return; }
+        if (!row) { r.root.hidden = true; r.id = -1; return; }
+        const from = pitch > 0 ? rowEls.findIndex((o) => o.id === row.id) : -1;
         r.root.hidden = false;
         if (row.leader) { if (crown.parentElement !== r.rank) r.rank.replaceChildren(crown); }
         else setText(r.rank, String(row.rank));
@@ -1251,7 +1346,32 @@ export function createScreens(root: HTMLElement): Screens {
           r.root.classList.toggle('tw-you', row.isHuman);
           r.root.classList.toggle('tw-leader', row.leader);
         }
+        if (from >= 0 && from !== i) {
+          r.root.animate([{ transform: `translateY(${(from - i) * pitch}px)` }, { transform: 'translateY(0)' }],
+            { duration: SLIDE_MS, easing: 'ease-out' });
+        }
       });
+      for (let i = 0; i < rowEls.length; i++) rowEls[i].id = rows[i] ? rows[i].id : -1;
+
+      // Overtakes: compared on the full ordering, so passing a rival below the shown rows counts too.
+      const ch = rankChanges(prevBoard, all);
+      prevBoard = all;
+      if (ch.humanDelta > 0) {
+        upUntil = now + UP_BADGE_MS;
+        setText(upBadge, `▲${ch.humanDelta}`);
+      }
+      if (ch.overtaken.length && now - lastToastAt >= TOAST_GAP_MS) {
+        lastToastAt = now;
+        showToast(ch.overtaken);
+        playSound('overtake');
+      }
+      const upOn = now < upUntil;
+      for (let i = 0; i < rows.length; i++) {
+        const mine = upOn && rows[i].isHuman;
+        rowEls[i].root.classList.toggle('tw-up-glow', mine && !still);
+        if (mine && upBadge.parentElement !== rowEls[i].root) rowEls[i].root.append(upBadge);
+      }
+      upBadge.hidden = !upOn;
       return pctTween.active(now);
     },
     showOver(s, onAgain, onHome, nativeAd) {

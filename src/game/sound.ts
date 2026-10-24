@@ -23,7 +23,8 @@ export type SoundName =
   | 'newBest'
   | 'heartbeat'  // tension layer: a soft lub-dub (`gain` from tension.ts beatGain)
   | 'crackle'    // tension layer: an ember crackle while your trail burns (`level` = burn progress)
-  | 'alert';     // a rival just became the closest threat to your trail (threats.ts)
+  | 'alert'      // a rival just became the closest threat to your trail (threats.ts)
+  | 'overtake';  // you passed a rival on the leaderboard
 
 export type SoundOpts = {
   /** capture: land gained, in % of the arena. */
@@ -351,6 +352,11 @@ const SOUNDS: Record<SoundName, Synth> = {
       tone(c, out, { type: 'triangle', f0: note(s), dur, gain: 0.055, attack: 0.005, delay: at });
       tone(c, out, { f0: note(s - 12), dur, gain: 0.03, attack: 0.005, delay: at });
     });
+  },
+  overtake(c, out) {
+    // A soft rising tick: two quick triangle blips (E5 then A5), inside the phone-speaker band.
+    [[7, 0, 0.06], [12, 0.055, 0.09]].forEach(([s, at, dur]) =>
+      tone(c, out, { type: 'triangle', f0: note(s), f1: note(s) * 1.04, dur, gain: 0.045, attack: 0.005, delay: at }));
   },
 };
 
