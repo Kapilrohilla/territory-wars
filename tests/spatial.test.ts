@@ -138,18 +138,15 @@ describe('sound graph', () => {
     setListener(view, () => head);
   });
 
-  it('setVolume scales the master gain: volume/100 × MASTER_GAIN; mute still wins', () => {
+  it('masterLevel is MASTER_GAIN, independent of the sound effects volume; mute still wins', () => {
     setVolume(50);
-    expect(masterLevel()).toBeCloseTo(0.5 * MASTER_GAIN, 9);
-    setVolume(100);
-    expect(masterLevel()).toBeCloseTo(MASTER_GAIN, 9);
+    expect(masterLevel()).toBe(MASTER_GAIN);
     setVolume(0);
-    expect(masterLevel()).toBe(0);
-    setVolume(60);
+    expect(masterLevel()).toBe(MASTER_GAIN);
     setMuted(true);
     expect(masterLevel()).toBe(0);
     setMuted(false);
-    expect(masterLevel()).toBeCloseTo(0.6 * MASTER_GAIN, 9);
+    expect(masterLevel()).toBe(MASTER_GAIN);
   });
 
   it('a positioned cue goes through a stereo panner set from its screen x', () => {

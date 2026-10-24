@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  DANGER_WARNINGS_KEY, burnProgress, createBurnCache, dangerLevel, dangerWarningsEnabled, homeTarget,
+  DANGER_WARNINGS_KEY, burnProgress, createBurnCache, createDangerState, dangerLevel, dangerWarningsEnabled, homeTarget, sampleDanger,
 } from '../src/game/danger';
 import { createWorld } from '../src/sim/world';
 import type { World } from '../src/sim/types';
@@ -165,5 +165,20 @@ describe('dangerWarningsEnabled', () => {
     expect(dangerWarningsEnabled(store({}))).toBe(true);
     expect(dangerWarningsEnabled(store({ [DANGER_WARNINGS_KEY]: '1' }))).toBe(true);
     expect(dangerWarningsEnabled(store({ [DANGER_WARNINGS_KEY]: '0' }))).toBe(false);
+  });
+});
+
+describe('sampleDanger raw', () => {
+  it('is dangerLevel whatever the warnings setting, while level honours it', () => {
+    const w = soloWorld();
+    outOnTrail(w, 60);
+    const off = createDangerState(false);
+    sampleDanger(w, off);
+    expect(off.level).toBe(0);
+    expect(off.raw).toBe(dangerLevel(w));
+    expect(off.raw).toBe(1);
+    const on = createDangerState(true);
+    sampleDanger(w, on);
+    expect(on.level).toBe(on.raw);
   });
 });

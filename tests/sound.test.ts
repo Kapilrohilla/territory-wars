@@ -1,5 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { LIMITER_TRIM, connectMaster, playSound, setMuted, unlockAudio, type SoundName } from '../src/game/sound';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  LIMITER_TRIM, MASTER_GAIN, MUSIC_GAIN, connectMaster, getTranspose, playSound, setMuted, setTranspose, unlockAudio,
+  type SoundName,
+} from '../src/game/sound';
 
 /** Records every gain envelope a sound schedules, so peaks and ramps can be checked. */
 type Call = { kind: string; v: number; t: number };
@@ -10,9 +13,10 @@ class FakeParam {
   linearRampToValueAtTime(v: number, t: number) { this.calls.push({ kind: 'lin', v, t }); }
   exponentialRampToValueAtTime(v: number, t: number) { this.calls.push({ kind: 'exp', v, t }); }
   setTargetAtTime(v: number, t: number) { this.calls.push({ kind: 'target', v, t }); }
+  cancelAndHoldAtTime(t: number) { this.calls.push({ kind: 'hold', v: this.value, t }); }
 }
 class FakeNode {
-  connect() {}
+  connect(_to?: unknown) {}
   disconnect() {}
 }
 const gains: FakeParam[] = [];
@@ -79,7 +83,7 @@ describe('sound', () => {
     g.AudioContext = FakeCtx;
     unlockAudio();
   });
-  afterAll(() => { g.AudioContext = saved; });
+  afterAll(() => { g.AudioContext = saved; setTranspose(0); });
 
   it.each(ALL)('%s: every voice ramps in from silence, peaks under 0.1 and fades out', (name) => {
     const env = envelopes(() => playSound(name, { pct: 5, streak: 4, tier: 2 }));
@@ -186,5 +190,116 @@ describe('sound', () => {
     const bare = { destination: node('out') }; // no createDynamicsCompressor (old engines, mocks)
     expect(connectMaster(bare as unknown as AudioContext, master as unknown as GainNode)).toBeNull();
     expect(links).toEqual([['master', 'out']]);
+  });
+
+  it('transpose shifts pitched effects by semitones and clamps to [-3, 4]', () => {
+    const note = (semi: number) => 440 * 2 ** (semi / 12);
+    expect(getTranspose()).toBe(0);
+    expect(freqs(() => playSound('capture', { pct: 0.5 })).osc[0]).toBeCloseTo(note(3), 6);
+    setTranspose(2);
+    expect(freqs(() => playSound('capture', { pct: 0.5 })).osc[0]).toBeCloseTo(note(3 + 2), 6);
+    setTranspose(9);
+    expect(getTranspose()).toBe(4);
+    setTranspose(-9);
+    expect(getTranspose()).toBe(-3);
+    setTranspose(0);
+  });
+});
+
+describe('audio buses', () => {
+  const g = globalThis as unknown as { AudioContext?: unknown };
+  const saved = g.AudioContext;
+  afterAll(() => { g.AudioContext = saved; });
+
+  it('splits the sfx and music buses under master, with their own levels', async () => {
+    const links: [string, string][] = [];
+    const names = new Map<object, string>();
+    const gainsMade: { gain: FakeParam }[] = [];
+    class BusCtx extends FakeCtx {
+      createGain() {
+        const n = Object.assign({ gain: new FakeParam(), disconnect() {} }, {
+          connect(to: object) { links.push([names.get(n) ?? '?', names.get(to) ?? '?']); },
+        });
+        names.set(n, ['master', 'sfx', 'music', 'trim'][gainsMade.length] ?? 'x');
+        gainsMade.push(n);
+        return n;
+      }
+    }
+    g.AudioContext = BusCtx;
+    vi.resetModules();
+    const s = await import('../src/game/sound');
+    s.setVolume(50);
+    s.setMusicVolume(40);
+    s.unlockAudio();
+    const [master, sfx, music] = gainsMade;
+    expect(links).toContainEqual(['sfx', 'master']);
+    expect(links).toContainEqual(['music', 'master']);
+    expect(master.gain.value).toBe(MASTER_GAIN);
+    expect(sfx.gain.value).toBeCloseTo(0.5, 9);
+    expect(music.gain.value).toBeCloseTo(MUSIC_GAIN * 0.4, 9);
+    expect(s.musicBus()).toBe(music);
+    expect(s.audioContext()).not.toBeNull();
+    s.setVolume(20);
+    expect(sfx.gain.calls[sfx.gain.calls.length - 1]).toMatchObject({ kind: 'target', v: 0.2 });
+    expect(master.gain.calls.length).toBe(0);
+  });
+
+  it('duckMusic dips the music bus to 0.6x and restores it within 0.25 s', async () => {
+    vi.useFakeTimers();
+    try {
+      g.AudioContext = FakeCtx;
+      vi.resetModules();
+      const s = await import('../src/game/sound');
+      s.setMusicVolume(100);
+      s.unlockAudio();
+      const bus = s.musicBus() as unknown as { gain: FakeParam };
+      bus.gain.calls.length = 0;
+      s.duckMusic();
+      vi.advanceTimersByTime(100);
+      const targets = bus.gain.calls.filter((c) => c.kind === 'target');
+      expect(targets[0].v).toBeCloseTo(MUSIC_GAIN * 0.6, 9);
+      expect(targets[1].v).toBeCloseTo(MUSIC_GAIN, 9);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('two ducks 50 ms apart leave one restore, and it uses the live music level', async () => {
+    vi.useFakeTimers();
+    try {
+      g.AudioContext = FakeCtx;
+      vi.resetModules();
+      const s = await import('../src/game/sound');
+      s.setMusicVolume(100);
+      s.unlockAudio();
+      const bus = s.musicBus() as unknown as { gain: FakeParam };
+      bus.gain.calls.length = 0;
+      s.duckMusic();
+      vi.advanceTimersByTime(50);
+      s.duckMusic();
+      s.setMusicVolume(20); // a slider move mid-duck
+      vi.advanceTimersByTime(99);
+      expect(bus.gain.calls.filter((c) => c.kind === 'hold').length).toBe(2); // no restore yet
+      vi.advanceTimersByTime(1);
+      const calls = bus.gain.calls;
+      expect(calls.filter((c) => c.kind === 'hold').length).toBe(3);
+      const last = calls[calls.length - 1];
+      expect(last.kind).toBe('target');
+      expect(last.v).toBeCloseTo(MUSIC_GAIN * 0.2, 9);
+      vi.advanceTimersByTime(500);
+      expect(bus.gain.calls.length).toBe(calls.length); // the first duck's restore never fires
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('music volume defaults to 50, clamps and saves through setMusicVolume', async () => {
+    vi.resetModules();
+    const s = await import('../src/game/sound');
+    expect(s.getMusicVolume()).toBe(50);
+    s.setMusicVolume(130);
+    expect(s.getMusicVolume()).toBe(100);
+    s.setMusicVolume(-5);
+    expect(s.getMusicVolume()).toBe(0);
   });
 });

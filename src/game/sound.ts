@@ -6,7 +6,10 @@
  */
 import type { Difficulty } from '../sim/config';
 import type { Vec } from '../sim/geometry';
-import { getDirectional, getSfxVolume, setDirectional as storeDirectional, setSfxVolume } from '../ui/settings';
+import {
+  getDirectional, getMusicVolume as storedMusicVolume, getSfxVolume, setDirectional as storeDirectional,
+  setMusicVolume as storeMusicVolume, setSfxVolume,
+} from '../ui/settings';
 
 export type SoundName =
   | 'capture'    // you closed a loop (scaled by `pct`)
@@ -54,8 +57,13 @@ export type SoundOpts = {
 export const MAX_GAIN = 0.09;
 
 const MUTE_KEY = 'territory-wars.muted';
-/** Master gain at 100 % volume. */
+/** Master gain when unmuted (the sound effects and music volumes sit on their own buses). */
 export const MASTER_GAIN = 0.9;
+/** Music bus gain at 100 % music volume: the music sits under the effects. */
+export const MUSIC_GAIN = 0.5;
+/** Music transposes by at most this many semitones, down and up. */
+const TRANSPOSE_MIN = -3;
+const TRANSPOSE_MAX = 4;
 /** Stereo spread: an event at the screen edge pans this far (not hard left/right). */
 export const PAN_MAX = 0.7;
 /** Positioned cues quieter than this (far off-screen) are not played at all. */
@@ -63,12 +71,20 @@ const MIN_SPATIAL_GAIN = 0.01;
 
 let ctx: AudioContext | null = null;
 let master: GainNode | null = null;
+/** Every effect voice goes through this bus (the sound effects volume). */
+let sfxBus: GainNode | null = null;
+/** The music's own bus (MUSIC_GAIN × the music volume), a sibling of the SFX bus. */
+let musicNode: GainNode | null = null;
 let failed = false;
 /** Added to every voice's start time while a sound is being built (SoundOpts.delay). */
 let offset = 0;
 let muted = loadMuted();
-/** The sound effects volume as a 0..1 factor on MASTER_GAIN (the 0–100 slider / 100). */
+/** The sound effects volume as a 0..1 gain on the SFX bus (the 0–100 slider / 100). */
 let volume = volumeToGain(getSfxVolume());
+/** The music volume as a 0..1 factor on MUSIC_GAIN. */
+let musicVolume = volumeToGain(storedMusicVolume());
+/** Semitones added to every pitched effect (see note), set by the music's key. */
+let transpose = 0;
 let directional = getDirectional();
 
 type AudioCtor = { new (): AudioContext };
@@ -97,13 +113,28 @@ export function volumeToGain(v: number): number {
   return v <= 0 ? 0 : v >= 100 ? 1 : v / 100;
 }
 
-/** The master gain now: 0 when muted, else MASTER_GAIN × volume. */
+/** The master gain now: 0 when muted, else MASTER_GAIN. */
 export function masterLevel(): number {
-  return muted ? 0 : MASTER_GAIN * volume;
+  return muted ? 0 : MASTER_GAIN;
+}
+
+/** The music bus gain now: MUSIC_GAIN × the music volume. */
+function musicLevel(): number {
+  return MUSIC_GAIN * musicVolume;
+}
+
+/** Whether music can be heard at all: not muted and the music volume above 0. */
+export function musicAudible(): boolean {
+  return !muted && musicVolume > 0;
 }
 
 function applyMaster(): void {
   if (master && ctx) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02);
+}
+
+function applyBuses(): void {
+  if (ctx && sfxBus) sfxBus.gain.setTargetAtTime(volume, ctx.currentTime, 0.02);
+  if (ctx && musicNode) musicNode.gain.setTargetAtTime(musicLevel(), ctx.currentTime, 0.02);
 }
 
 /** Current sound effects volume, 0–100. */
@@ -115,7 +146,70 @@ export function getVolume(): number {
 export function setVolume(v: number): void {
   volume = volumeToGain(v);
   setSfxVolume(v);
-  applyMaster();
+  applyBuses();
+}
+
+/** Current music volume, 0–100. */
+export function getMusicVolume(): number {
+  return Math.round(musicVolume * 100);
+}
+
+/** Sets (and saves) the music volume, 0–100. Mute still overrides it. */
+export function setMusicVolume(v: number): void {
+  musicVolume = volumeToGain(v);
+  storeMusicVolume(v);
+  applyBuses();
+}
+
+/** Shifts every pitched effect by `semis` (clamped to −3..4), so the effects follow the music's key. */
+export function setTranspose(semis: number): void {
+  transpose = Number.isFinite(semis) ? Math.min(TRANSPOSE_MAX, Math.max(TRANSPOSE_MIN, semis)) : 0;
+}
+
+export function getTranspose(): number {
+  return transpose;
+}
+
+/** The shared AudioContext, or null before unlockAudio (or where WebAudio is unavailable). */
+export function audioContext(): AudioContext | null {
+  return ctx;
+}
+
+/** Where the music plays; null until the audio is unlocked. */
+export function musicBus(): GainNode | null {
+  return musicNode;
+}
+
+let duckTimer: ReturnType<typeof setTimeout> | null = null;
+const DUCK_HOLD_MS = 100;
+
+/** Cancels the param's automation after `t`, keeping its current value (mid-ramp included). */
+function holdParam(p: AudioParam, t: number): void {
+  if (typeof p.cancelAndHoldAtTime === 'function') p.cancelAndHoldAtTime(t);
+  else {
+    const v = p.value;
+    p.cancelScheduledValues(t);
+    p.setValueAtTime(v, t);
+  }
+}
+
+/**
+ * Briefly dips the music (to 0.6x, back within 0.25 s) so a big effect cuts through it. A new
+ * duck replaces the one in flight, and the restore reads the live music level when it is
+ * scheduled, so a slider change during the dip isn't reverted.
+ */
+export function duckMusic(): void {
+  if (!ctx || !musicNode) return;
+  const node = musicNode;
+  const c = ctx;
+  holdParam(node.gain, c.currentTime);
+  node.gain.setTargetAtTime(musicLevel() * 0.6, c.currentTime, 0.015);
+  if (duckTimer !== null) clearTimeout(duckTimer);
+  duckTimer = setTimeout(() => {
+    duckTimer = null;
+    holdParam(node.gain, c.currentTime);
+    node.gain.setTargetAtTime(musicLevel(), c.currentTime, 0.04);
+  }, DUCK_HOLD_MS);
 }
 
 export function isDirectional(): boolean {
@@ -217,12 +311,20 @@ export function unlockAudio(): void {
       master = ctx.createGain();
       master.gain.value = masterLevel();
       connectMaster(ctx, master);
+      sfxBus = ctx.createGain();
+      sfxBus.gain.value = volume;
+      sfxBus.connect(master);
+      musicNode = ctx.createGain();
+      musicNode.gain.value = musicLevel();
+      musicNode.connect(master);
     }
     if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
   } catch {
     failed = true;
     ctx = null;
     master = null;
+    sfxBus = null;
+    musicNode = null;
   }
 }
 
@@ -321,8 +423,8 @@ function noise(c: AudioContext, out: AudioNode, o: NoiseOpts): void {
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-/** Notes as semitones above A4 (440 Hz). */
-const note = (semi: number) => 440 * 2 ** (semi / 12);
+/** Notes as semitones above A4 (440 Hz), shifted by the current transpose. */
+const note = (semi: number) => 440 * 2 ** ((semi + transpose) / 12);
 
 // ---------- the sounds ----------
 
@@ -497,7 +599,7 @@ const SOUND_TAIL_S = 1.5;
 
 /**
  * Where a positioned cue's voices go: a per-cue gain (distance) into a StereoPannerNode
- * into the master. Falls back to the gain alone when panners are unsupported. Returns null
+ * into the SFX bus. Falls back to the gain alone when panners are unsupported. Returns null
  * when the cue is too far to hear. The bus is disconnected once the sound is over.
  */
 function spatialBus(c: AudioContext, out: AudioNode, o: SoundOpts): AudioNode | null {
@@ -529,10 +631,10 @@ function spatialBus(c: AudioContext, out: AudioNode, o: SoundOpts): AudioNode | 
 }
 
 function play(fn: Synth, o: SoundOpts = {}): void {
-  if (muted || !ctx || !master || ctx.state !== 'running') return;
+  if (muted || !ctx || !sfxBus || ctx.state !== 'running') return;
   offset = Math.max(0, o.delay ?? 0);
   try {
-    const out = spatialBus(ctx, master, o);
+    const out = spatialBus(ctx, sfxBus, o);
     if (out) fn(ctx, out, o);
   } catch { /* ignore */ } finally { offset = 0; }
 }
@@ -553,4 +655,12 @@ export function playSelect(d: Difficulty): void {
 /** A quiet UI tick (colour swatches, buttons). */
 export function playTick(): void {
   play((c, out) => tone(c, out, { type: 'triangle', f0: 1400, dur: 0.035, gain: 0.03 }));
+}
+
+/** One soft pluck on the music bus, so the music slider has something to preview. */
+export function playMusicPreview(): void {
+  if (muted || !ctx || !musicNode || ctx.state !== 'running') return;
+  try {
+    tone(ctx, musicNode, { type: 'triangle', f0: 440, dur: 0.18, gain: 0.08, attack: 0.01 });
+  } catch { /* ignore */ }
 }

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  DANGER_WARNINGS_KEY, DEFAULT_SFX_VOLUME, DIRECTIONAL_KEY, IMPACT_KEY, SFX_VOLUME_KEY,
-  getDangerWarnings, getDirectional, getImpact, getSfxVolume, readBool, safeStorage,
-  setDangerWarnings, setDirectional, setImpact, setSfxVolume,
+  DANGER_WARNINGS_KEY, DEFAULT_MUSIC_VOLUME, DEFAULT_SFX_VOLUME, MUSIC_VOLUME_KEY, DIRECTIONAL_KEY, IMPACT_KEY, SFX_VOLUME_KEY,
+  getDangerWarnings, getDirectional, getImpact, getMusicVolume, getSfxVolume, readBool, safeStorage,
+  setDangerWarnings, setDirectional, setImpact, setMusicVolume, setSfxVolume,
 } from '../src/ui/settings';
 
 const mem = (init: Record<string, string> = {}) => {
@@ -116,5 +116,22 @@ describe('blocked localStorage (the getter itself throws)', () => {
     Object.defineProperty(globalThis, 'localStorage', { configurable: true, get: () => s });
     expect(safeStorage()).toBe(s);
     expect(getImpact()).toBe(false);
+  });
+});
+
+describe('music volume', () => {
+  it('defaults to 50, persists clamped and survives a throwing store', () => {
+    expect(MUSIC_VOLUME_KEY).toBe('territory-wars.musicVolume');
+    expect(DEFAULT_MUSIC_VOLUME).toBe(50);
+    const s = mem();
+    expect(getMusicVolume(s)).toBe(50);
+    setMusicVolume(30, s);
+    expect(s.m.get(MUSIC_VOLUME_KEY)).toBe('30');
+    expect(getMusicVolume(s)).toBe(30);
+    setMusicVolume(250, s);
+    expect(getMusicVolume(s)).toBe(100);
+    expect(getMusicVolume(mem({ [MUSIC_VOLUME_KEY]: 'loud' }))).toBe(50);
+    expect(getMusicVolume(throwing)).toBe(50);
+    expect(() => setMusicVolume(10, throwing)).not.toThrow();
   });
 });

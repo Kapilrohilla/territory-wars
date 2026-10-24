@@ -144,7 +144,7 @@ function play(prefs: StartPrefs): void {
   session?.dispose();
   screen = 'playing';
   lastPrefs = prefs;
-  ui.showHud(pauseGame); // before the session so the minimap has its CSS size
+  ui.showHud(pauseGame, () => session?.music.events([{ e: 'overtake' }])); // before the session so the minimap has its CSS size
   const lifetimeBefore = loadLifetime();
   const s = createSession(canvas, {
     minimap: ui.minimap,

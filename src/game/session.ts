@@ -9,7 +9,11 @@ import { createEffects, type Effects } from './effects';
 import { createLoop } from './loop';
 import { drawMinimap } from './minimap';
 import { createSfxState, soundsFor, type Cue } from './sfxEvents';
-import { currentListener, playSound, setListener } from './sound';
+import { currentListener, duckMusic, playSound, setListener } from './sound';
+import { createMusicPlayer, type MusicPlayer } from './music/player';
+import { tierFor, type MusicMood } from './music/composer';
+import { musicEventsFor } from './music/fromCues';
+import { ROUND_KEYS } from './music/theory';
 import { createFx, interpPos, prefersReducedMotion, render, snapshotFx, type Fx } from './render';
 import { createMoodState, moodEvents, moodOf } from './moods';
 import { botSkin, faceFor, skinById } from './skins';
@@ -54,6 +58,8 @@ export type SessionOpts = {
    * (with its quick-kill `streak`) shows the KNOCKOUT! banner.
    */
   onCue?: (cue: Cue) => void;
+  /** The round's music player; a test injects a stub. Defaults to a fresh seeded player. */
+  music?: MusicPlayer;
 };
 
 /** How often (ms) the HUD rects are re-read while the round runs. */
@@ -88,6 +94,8 @@ export type Session = {
   /** Resumes after pause(). */
   resume(): void;
   readonly paused: boolean;
+  /** The round's adaptive music; silent until start(), disposed with the session or at the round's end. */
+  music: MusicPlayer;
 };
 
 /** How long the game keeps rendering after it ends, before onOver. */
@@ -140,7 +148,17 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const threatAlert = createThreatAlert();
   const input = createInput(canvas);
   const overlay = createOverlay(danger, threats, (p) => fx.faceOf!(p), input);
-  const tension = createTension();
+  // The round's music: its own seed (game layer, not the sim's), its key from the seed.
+  const musicSeed = Math.floor(Math.random() * 2 ** 31);
+  const music = opts.music ?? createMusicPlayer({
+    difficulty: opts.difficulty ?? 'normal',
+    seed: musicSeed,
+    roundKey: ROUND_KEYS[musicSeed % ROUND_KEYS.length],
+  });
+  const tension = createTension((name, o) => {
+    playSound(name, o);
+    if (name === 'escape') music.events([{ e: 'escape' }]);
+  });
   let inputDisposed = false;
   const disposeInput = () => {
     if (inputDisposed) return;
@@ -218,7 +236,15 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       moodEvents(world.events, world, moods);
     }
     // Every step, even a silent one: the revive shield's end is a state edge, not an event.
-    for (const cue of soundsFor(world.events, world, sfx)) {
+    const cues = soundsFor(world.events, world, sfx);
+    if (cues.length === 0) return;
+    // A milestone lifts the music's key from its next bar, so its fanfare here stays in tune
+    // with the bar still ringing.
+    music.events(musicEventsFor(cues));
+    let duck = false;
+    for (const c of cues) if (c.name === 'capture' || c.name === 'steal' || c.name === 'kill' || c.name === 'milestone') duck = true;
+    if (duck) duckMusic();
+    for (const cue of cues) {
       playSound(cue.name, cue);
       tension.heard(cue.name, cue.delay);
       opts.onCue?.(cue);
@@ -227,6 +253,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   /** The human's share on the last step it was alive (see finalSharePct). */
   let alivePct = 0;
   const recordFinalPct = () => { finalPct = finalSharePct(world, alivePct); };
+
+  /** The music mood, refilled each frame rather than allocated. */
+  const musicMood: MusicMood = { tier: 0, danger: 0 };
 
   // Knocked out: the world is frozen behind the revive offer; rendering goes on.
   let downAt: number | null = null;
@@ -265,13 +294,19 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     effects.update(dt * fxScale);
     if (now - hudRectsAt >= HUD_RECTS_MS) refreshHudRects();
     sampleDanger(world, danger);
+    musicMood.tier = tierFor(world.players[world.humanId].trail.length > 0, danger.raw, danger.burn !== null);
+    musicMood.danger = danger.raw;
+    music.setMood(musicMood);
     // Real time, and only while the loop runs: silent when paused (no frames), and the
     // controller itself goes quiet behind the revive offer and once the round is over.
     tension.update(world, dt, danger);
     if (danger.warnings) findThreats(world, threats);
     else threats.length = 0;
     // Heard from the side the rival is coming from (threats[0] is the one it fired for).
-    if (tickThreatAlert(threatAlert, threats, dt)) playSound('alert', { at: threats[0].pos });
+    if (tickThreatAlert(threatAlert, threats, dt)) {
+      playSound('alert', { at: threats[0].pos });
+      duckMusic();
+    }
     // Frozen behind the revive modal with no effect left to play: the frame is static under
     // the blurred overlay, so skip repainting it (resize still repaints). Painting resumes
     // after revive()/giveUp(), which clear awaitingRevive.
@@ -299,6 +334,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       if (overAt === null) {
         overAt = now;
         disposeInput();
+        // The closing cadence (if any) is already built; the player lets it ring out, and the
+        // effect transpose goes back to 0 here so the results screen's sounds aren't shifted.
+        // dispose() below calls it again, which cuts a still-ringing cadence (Play again).
+        music.dispose();
       }
       if (now - overAt >= OVER_TAIL_MS) {
         overNotified = true;
@@ -324,6 +363,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       paused = true;
       hitStop.clear();
       stop();
+      music.pause();
       return true;
     },
     resume() {
@@ -332,8 +372,10 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       hitStop.clear();
       running = true;
       lastFrame = null;
+      music.resume();
       loop.start();
     },
+    music,
     world,
     camera,
     fx,
@@ -344,6 +386,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       if (disposed || running || overNotified || paused) return;
       running = true;
       lastFrame = null;
+      music.start();
       loop.start();
     },
     stop,
@@ -353,6 +396,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
       hitStop.clear();
       stop();
       tension.dispose();
+      music.dispose();
       if (currentListener() === camera) setListener(null);
       window.removeEventListener('resize', resize);
       disposeInput();
