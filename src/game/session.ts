@@ -16,6 +16,7 @@ import { botSkin, faceFor, skinById } from './skins';
 import { createDangerState, sampleDanger, type DangerState } from './danger';
 import { createOverlay } from './overlay';
 import { createTension } from './tension';
+import { createThreatAlert, findThreats, tickThreatAlert, type Threat } from './threats';
 
 export type SessionOpts = {
   seed?: number;
@@ -116,7 +117,11 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
   const effects = createEffects();
   // Danger is sampled once per frame and shared by the overlay and the tension sounds.
   const danger = createDangerState();
-  const overlay = createOverlay(danger);
+  // Rivals closing on the human's trail, also once per frame (empty with warnings off).
+  const threats: Threat[] = [];
+  fx.threats = threats;
+  const threatAlert = createThreatAlert();
+  const overlay = createOverlay(danger, threats, (p) => fx.faceOf!(p));
   const tension = createTension();
   const input = createInput(canvas);
   let inputDisposed = false;
@@ -134,7 +139,7 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     render(ctx, world, camera, alpha, fx, effects);
     overlay.draw(ctx, camera);
-    if (miniCtx && miniSize > 0) drawMinimap(miniCtx, world, miniSize, dpr, alpha, camera);
+    if (miniCtx && miniSize > 0) drawMinimap(miniCtx, world, miniSize, dpr, alpha, camera, threats);
   };
 
   const resize = () => {
@@ -210,6 +215,9 @@ export function createSession(canvas: HTMLCanvasElement, opts: SessionOpts = {})
     // Real time, and only while the loop runs: silent when paused (no frames), and the
     // controller itself goes quiet behind the revive offer and once the round is over.
     tension.update(world, dt, danger);
+    if (danger.warnings) findThreats(world, threats);
+    else threats.length = 0;
+    if (tickThreatAlert(threatAlert, threats, dt)) playSound('alert');
     // Frozen behind the revive modal with no effect left to play: the frame is static under
     // the blurred overlay, so skip repainting it (resize still repaints). Painting resumes
     // after revive()/giveUp(), which clear awaitingRevive.

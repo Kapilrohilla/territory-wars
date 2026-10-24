@@ -6,6 +6,7 @@ import { SPAWN_HEIGHT, type Effects, type HeadPose } from './effects';
 import { drawFace, drawFaceBack } from './faces';
 import type { Face } from './skins';
 import { PALETTE } from './palette';
+import type { Threat } from './threats';
 
 export const LIP_OFFSET = 0.35;
 const TRAIL_WIDTH = 0.6;
@@ -21,6 +22,11 @@ export type Fx = {
   prevHeading: Map<number, number>;
   /** The face each head shows this frame (skin + mood); faceless heads when unset. */
   faceOf?: (p: Player) => Face;
+  /**
+   * This frame's threats to the human's trail (threats.ts), closest first; the session
+   * leaves it empty while danger warnings are off. Close ones glow on the trail.
+   */
+  threats?: readonly Threat[];
 };
 
 export function createFx(): Fx {
@@ -402,6 +408,101 @@ function drawTrail(ctx: CanvasRenderingContext2D, p: Player, head: Vec, time: nu
   }
 }
 
+/** A threat closer than this (u) lights up the human's trail. */
+export const THREAT_GLOW_DIST = 10;
+/** The glow covers this much path length (u) either side of the threatened point. */
+const THREAT_GLOW_HALF = 3;
+const THREAT_GLOW_W = 0.9;
+const THREAT_RIPPLE_HZ = 3;
+const THREAT_RIPPLE_R0 = 0.45;
+const THREAT_RIPPLE_GROW = 0.9;
+const THREAT_BADGE_R = 0.36;
+
+/** Glow opacity for a threat at distance d: 0.6 right on the trail, 0 at THREAT_GLOW_DIST. */
+export function threatGlowAlpha(d: number): number {
+  return 0.6 * clamp01(1 - d / THREAT_GLOW_DIST);
+}
+
+/** Adds the stretch of trail + head between path lengths a and b (from trail[0]) as one sub-path. */
+function addTrailRange(ctx: CanvasRenderingContext2D, trail: Vec[], head: Vec, a: number, b: number): void {
+  let acc = 0;
+  let started = false;
+  for (let i = 0; i < trail.length; i++) {
+    const p = trail[i], q = i + 1 < trail.length ? trail[i + 1] : head;
+    const len = Math.hypot(q.x - p.x, q.y - p.y);
+    const end = acc + len;
+    if (end >= a && len > 0) {
+      if (!started) {
+        const k = clamp01((a - acc) / len);
+        ctx.moveTo(p.x + (q.x - p.x) * k, p.y + (q.y - p.y) * k);
+        started = true;
+      }
+      if (end >= b) {
+        const k = clamp01((b - acc) / len);
+        ctx.lineTo(p.x + (q.x - p.x) * k, p.y + (q.y - p.y) * k);
+        return;
+      }
+      ctx.lineTo(q.x, q.y);
+    }
+    acc = end;
+  }
+}
+
+/** Ember glow on the human's trail around each close threat's nearest point (world space). */
+function drawThreatGlow(ctx: CanvasRenderingContext2D, trail: Vec[], head: Vec, threats: readonly Threat[]): void {
+  ctx.lineWidth = THREAT_GLOW_W;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = EMBER_CORE;
+  for (const t of threats) {
+    const a = threatGlowAlpha(t.dist);
+    if (a <= 0) continue;
+    ctx.beginPath();
+    addTrailRange(ctx, trail, head, Math.max(0, t.trailS - THREAT_GLOW_HALF), t.trailS + THREAT_GLOW_HALF);
+    ctx.globalAlpha = a;
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** A small "!" badge with a ripple ring at each close threat's trail point; 3 Hz, static when reduced. */
+function drawThreatRipples(ctx: CanvasRenderingContext2D, threats: readonly Threat[], time: number, reduced: boolean): void {
+  for (const t of threats) {
+    const strength = clamp01(1 - t.dist / THREAT_GLOW_DIST);
+    if (strength <= 0) continue;
+    const { x, y } = t.trailPoint;
+    const phase = reduced ? 0.5 : (time * THREAT_RIPPLE_HZ) % 1;
+    ctx.beginPath();
+    ctx.arc(x, y, THREAT_RIPPLE_R0 + THREAT_RIPPLE_GROW * phase, 0, Math.PI * 2);
+    ctx.strokeStyle = EMBER_CORE;
+    ctx.lineWidth = 0.12;
+    ctx.globalAlpha = (reduced ? 0.6 : 1 - phase) * Math.min(1, 0.4 + strength);
+    ctx.stroke();
+    ctx.globalAlpha = Math.min(1, 0.5 + strength);
+    // The badge: white disc, ember rim, ink "!".
+    ctx.beginPath();
+    ctx.arc(x, y, THREAT_BADGE_R, 0, Math.PI * 2);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fill();
+    ctx.lineWidth = 0.08;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x, y - THREAT_BADGE_R * 0.55);
+    ctx.lineTo(x, y + THREAT_BADGE_R * 0.12);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 0.1;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y + THREAT_BADGE_R * 0.5, 0.055, 0, Math.PI * 2);
+    ctx.fillStyle = INK;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+const INK = '#34323F';
+
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -560,11 +661,16 @@ export function render(
   const alive = shownHeads(world);
   const heads = new Map<number, Vec>();
   for (const p of alive) heads.set(p.id, interpPos(p, alpha));
-  for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!, world.time);
-  // Human last so it stays on top.
-  const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
   const human = world.players[world.humanId];
   const humanHead = human.alive ? heads.get(human.id) : undefined;
+  const threats = fx.threats;
+  const glow = humanHead && human.trail.length > 0 && threats && threats.length > 0;
+  // Under the trails, so the glow reads as an ember outline around the human's ribbon.
+  if (glow) drawThreatGlow(ctx, human.trail, humanHead, threats);
+  for (const p of alive) drawTrail(ctx, p, heads.get(p.id)!, world.time);
+  if (glow) drawThreatRipples(ctx, threats, world.time, reduced);
+  // Human last so it stays on top.
+  const order = alive.filter((p) => !p.isHuman).concat(alive.filter((p) => p.isHuman));
   for (const p of order) {
     // The shield sits just under the human's head, so the head stays crisp inside it.
     if (p === human && humanHead && world.time < human.protectedUntil) {

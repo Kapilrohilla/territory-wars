@@ -62,7 +62,7 @@ class FakeCtx {
 }
 
 const ALL: SoundName[] = ['capture', 'steal', 'cut', 'kill', 'burning', 'escape', 'down', 'revive',
-  'shieldDown', 'milestone', 'start', 'win', 'gameover', 'newBest', 'heartbeat', 'crackle'];
+  'shieldDown', 'milestone', 'start', 'win', 'gameover', 'newBest', 'heartbeat', 'crackle', 'alert'];
 
 /** Envelopes (gain params ramped by a voice) scheduled while running fn. */
 function envelopes(fn: () => void): FakeParam[] {
@@ -126,6 +126,18 @@ describe('sound', () => {
     expect(peak(envelopes(() => playSound('crackle', { level: 0 })))).toBeGreaterThanOrEqual(0.04);
     const f = freqs(() => playSound('crackle', { level: 1 }));
     for (const hz of f.filter) { expect(hz).toBeGreaterThanOrEqual(1000); expect(hz).toBeLessThanOrEqual(5000); }
+  });
+
+  it('alert: a short two-note blip, every partial in the phone-speaker band', () => {
+    const f = freqs(() => playSound('alert'));
+    expect(new Set(f.osc.map((hz) => Math.round(hz))).size).toBeGreaterThanOrEqual(2);
+    for (const hz of [...f.osc, ...f.filter]) {
+      expect(hz).toBeGreaterThanOrEqual(150);
+      expect(hz).toBeLessThanOrEqual(4000);
+    }
+    envelopes(() => playSound('alert'));
+    expect(new Set(starts).size).toBe(2); // two notes, one after the other
+    expect(Math.max(...starts)).toBeLessThan(0.2);
   });
 
   it('muted plays nothing', () => {

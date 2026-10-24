@@ -22,7 +22,8 @@ export type SoundName =
   | 'gameover'
   | 'newBest'
   | 'heartbeat'  // tension layer: a soft lub-dub (`gain` from tension.ts beatGain)
-  | 'crackle';   // tension layer: an ember crackle while your trail burns (`level` = burn progress)
+  | 'crackle'    // tension layer: an ember crackle while your trail burns (`level` = burn progress)
+  | 'alert';     // a rival just became the closest threat to your trail (threats.ts)
 
 export type SoundOpts = {
   /** capture: land gained, in % of the arena. */
@@ -328,6 +329,14 @@ const SOUNDS: Record<SoundName, Synth> = {
     // A tiny burst of band-passed noise at a random pitch, a little louder as the burn nears.
     const p = clamp01(o.level ?? 0);
     noise(c, out, { dur: 0.035 + Math.random() * 0.03, gain: 0.045 + 0.03 * p, freq: 1600 + Math.random() * 2400, q: 2 });
+  },
+  alert(c, out) {
+    // A quick rising "bip-bip" (B5 then E6) with a soft octave-down body, all inside the
+    // 150 Hz–4 kHz band small phone speakers play well.
+    [[14, 0, 0.07], [19, 0.09, 0.11]].forEach(([s, at, dur]) => {
+      tone(c, out, { type: 'triangle', f0: note(s), dur, gain: 0.055, attack: 0.005, delay: at });
+      tone(c, out, { f0: note(s - 12), dur, gain: 0.03, attack: 0.005, delay: at });
+    });
   },
 };
 
