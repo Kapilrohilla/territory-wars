@@ -39,9 +39,10 @@ const MAX_TRAIL_LEN = 40; // u; beyond this an 'out' bot turns back
 const OUTWARD_JITTER = 0.6; // rad
 const SELF_IGNORE_LEN = 1.5; // u of own trail nearest the head ignored for lookahead
 // Smarter (Hard) bots; all gated by the DifficultyTuning flags.
-const HEAD_COST = 1.5; // smartHunt: cost = distToBot + HEAD_COST · pathLengthFromHumanHead
-const LEAD_K = 0.5; // lead the live tail by this share of the human's travel until arrival
-const LEAD_MAX = 4; // u
+// smartHunt: cost = distToBot + HEAD_COST · pathLengthFromHumanHead. Below 1, or the head
+// itself always wins (d(head) ≤ d(q) + path(q)) and the bot rams it head-on instead of cutting.
+const HEAD_COST = 0.6;
+const CUT_BEHIND = 2; // u of path length behind the head the nearest aim point sits (slot 0)
 const REACH_SLACK_S = 0.4; // a hunt must arrive within this long after the human gets home
 const PACK_EVAL_S = 0.5; // pack commitment is re-picked this often (world time)
 const PINCER_GAP = 6; // u of human path length between committed bots' aim points
@@ -248,9 +249,9 @@ function scanPrey(world: World): void {
 /**
  * smartHunt aim point for a bot in pack slot `slot`, or null when the human's trail is out
  * of huntRadius or can't be reached before the human gets home. Among the trail points at
- * least slot·PINCER_GAP of path length behind the head, picks the one minimising
- * distToBot + HEAD_COST·pathFromHead; an aim at the head itself leads along the human's
- * heading (the live tail will have grown there by the time the bot arrives).
+ * least CUT_BEHIND of path length behind the head, picks the one minimising
+ * distToBot + HEAD_COST·pathFromHead: a real trail point to cut, never the head. Slot k > 0
+ * then aims at the best point a further k·PINCER_GAP behind slot 0's point.
  * Leaves the bot's distance to the nearest trail point in prey.nearest.
  */
 function smartTarget(world: World, p: Player, tune: DifficultyTuning, slot: number): Vec | null {
@@ -264,9 +265,26 @@ function smartTarget(world: World, p: Player, tune: DifficultyTuning, slot: numb
 
   const h = world.players[world.humanId];
   const t = h.trail;
-  const maxS = prey.total - PINCER_GAP * slot;
+  let best = bestCut(h, px, py, prey.total - CUT_BEHIND);
+  if (prey.nearest > R) return null;
+  if (slot > 0) best = bestCut(h, px, py, cutS - PINCER_GAP * slot);
+  // A trail shorter than the offset: best stays 0 (the trail's start).
+  const target = t[best];
+  // Reachable before the human is home: botDist/SPEED < homeDist/SPEED + slack.
+  if (dist(target, p.pos) / CONFIG.SPEED >= prey.homeDist / CONFIG.SPEED + REACH_SLACK_S) return null;
+  return target;
+}
+
+let cutS = 0; // path length (from trail[0]) of the point bestCut last picked
+/**
+ * Index of the human trail point (path length ≤ maxS) minimising
+ * dist to (px, py) + HEAD_COST·pathFromHead; sets cutS, and prey.nearest (trail and head).
+ */
+function bestCut(h: Player, px: number, py: number, maxS: number): number {
+  const t = h.trail;
   let nearest = Infinity, bestCost = Infinity, best = 0;
   let s = 0, lx = t[0].x, ly = t[0].y;
+  cutS = 0;
   for (let i = 0; i <= t.length; i++) {
     const q = i < t.length ? t[i] : h.pos;
     s += Math.hypot(q.x - lx, q.y - ly);
@@ -275,20 +293,11 @@ function smartTarget(world: World, p: Player, tune: DifficultyTuning, slot: numb
     if (d < nearest) nearest = d;
     if (s <= maxS + 1e-9) {
       const cost = d + HEAD_COST * (prey.total - s);
-      if (cost < bestCost) { bestCost = cost; best = i; }
+      if (cost < bestCost && i < t.length) { bestCost = cost; best = i; cutS = s; }
     }
   }
   prey.nearest = nearest;
-  if (nearest > R) return null;
-  // A trail shorter than this slot's offset: best stays 0 (the trail's start).
-  let target: Vec;
-  if (best === t.length) {
-    const lead = Math.min(LEAD_K * dist(h.pos, p.pos), LEAD_MAX);
-    target = { x: h.pos.x + Math.cos(h.heading) * lead, y: h.pos.y + Math.sin(h.heading) * lead };
-  } else target = t[best];
-  // Reachable before the human is home: botDist/SPEED < homeDist/SPEED + slack.
-  if (dist(target, p.pos) / CONFIG.SPEED >= prey.homeDist / CONFIG.SPEED + REACH_SLACK_S) return null;
-  return target;
+  return best;
 }
 
 /** Can this bot (alive, not burning, short trail) hunt with smartHunt at all? */

@@ -41,7 +41,7 @@ export type DifficultyTuning = {
   botCount: number;
   /** Bot steering rate (like CONFIG.TURN_HUMAN). */
   botTurnRate: number;
-  /** Scales the bots' hunt ray lengths. */
+  /** Scales the bots' hunt ray lengths. Unused when smartHunt is on (Hard), which uses huntRadius instead. */
   huntRangeMul: number;
   /** A bot with a trail longer than this (u) stops hunting and heads home. */
   cautionTrail: number;
@@ -50,7 +50,7 @@ export type DifficultyTuning = {
   /** Speed (u/s) of each front of a burning trail. */
   burnSpeed: number;
   // Smarter bots (Hard only; off for easy and normal). Same speed and rules as the player.
-  /** Hunt the human's trail near its head (cost distToBot + 1.5·path-from-head), leading the live tail. */
+  /** Hunt the human's trail near its head (cost distToBot + 0.6·path-from-head), cutting it ≥ 2 u behind the head. */
   smartHunt: boolean;
   /** With smartHunt: notice any human trail point this close (u), in any direction; 0 = off. */
   huntRadius: number;

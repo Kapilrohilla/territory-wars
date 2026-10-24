@@ -216,7 +216,7 @@ describe('hard bots (Task 8)', () => {
       .toEqual([true, 25, 3, 0.25, true, 1.35]);
   });
 
-  it('smartHunt: aims nearer the human head than the plain nearest point', () => {
+  it('smartHunt: aims at a trail point nearer the head than the plain nearest point', () => {
     const heading = (d: 'normal' | 'hard') => {
       const w = arena(d, [1], v(-60, 40));
       placeBot(w, 1, v(0, -8), Math.PI / 2, v(0, -14));
@@ -228,10 +228,26 @@ describe('hard bots (Task 8)', () => {
     };
     // Normal goes straight for the nearest point (0, 0): due north.
     expect(Math.abs(angleDiff(heading('normal'), Math.PI / 2))).toBeLessThan(0.05);
-    // Hard aims towards the head end (x ≈ 20+): well east of north.
+    // Hard: min of hypot(x, 8) + 0.6·(20 − x) is at x = 6, a trail point 14 u behind the head
+    // (the head itself, cost 21.5, loses to it at 15.2).
     const hard = heading('hard');
-    expect(hard).toBeLessThan(Math.PI / 2 - 0.6);
-    expect(hard).toBeGreaterThan(0);
+    const x = 8 / Math.tan(hard); // where the aim ray crosses the trail (y = 0)
+    expect(x).toBeGreaterThan(5);
+    expect(x).toBeLessThan(7);
+  });
+
+  it('smartHunt: next to the head it cuts the trail ≥ 2 u behind, never rams the head', () => {
+    const w = arena('hard', [1], v(-60, 40));
+    placeBot(w, 1, v(20, -3), Math.PI / 2, v(20, -9));
+    humanTrail(w, v(-20, 0), v(20, 0)); // head at (20, 0), 3 u north of the bot
+    const brains = createBrains(w);
+    const ang = botInputs(w, brains, mulberry32(3)).get(1)!.targetHeading!;
+    expect(brains.get(1)!.state).toBe('hunt');
+    // The aim ray from (20, −3) crosses the trail (y = 0) at x = 20 + 3/tan: a trail point
+    // at least CUT_BEHIND (2 u) behind the head, and the nearest such one.
+    const x = 20 + 3 / Math.tan(ang);
+    expect(x).toBeLessThanOrEqual(18 + 1e-6);
+    expect(x).toBeGreaterThan(17.5);
   });
 
   it('wide awareness: notices a trail 20 u away at 120° off its heading (normal does not)', () => {
