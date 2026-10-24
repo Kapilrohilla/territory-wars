@@ -49,14 +49,36 @@ export type DifficultyTuning = {
   waypointMax: number;
   /** Speed (u/s) of each front of a burning trail. */
   burnSpeed: number;
+  // Smarter bots (Hard only; off for easy and normal). Same speed and rules as the player.
+  /** Hunt the human's trail near its head (cost distToBot + 1.5·path-from-head), leading the live tail. */
+  smartHunt: boolean;
+  /** With smartHunt: notice any human trail point this close (u), in any direction; 0 = off. */
+  huntRadius: number;
+  /** With smartHunt: at most this many bots hunt the human at once (re-picked every 0.5 s); 0 = no limit. */
+  packSize: number;
+  /** Chance (0..1) a new trip is a raid looping through the nearest edge of the human's land. */
+  raidChance: number;
+  /** An 'out' bot heads home when a rival head is nearer its trail than it is to its land. */
+  safeReturn: boolean;
+  /** Multiplies the waypoint spacing upper bound and the bots' max trail length (1 = off). */
+  loopScale: number;
 };
+
+const NOT_SMART = { smartHunt: false, huntRadius: 0, packSize: 0, raidChance: 0, safeReturn: false, loopScale: 1 } as const;
 
 /** Normal is the baseline (the CONFIG defaults); easy and hard scale around it. */
 export const DIFFICULTY: Record<Difficulty, DifficultyTuning> = {
-  easy: { botCount: 8, botTurnRate: 3, huntRangeMul: 0.5, cautionTrail: 18, waypointMax: 11, burnSpeed: 30 },
+  easy: {
+    botCount: 8, botTurnRate: 3, huntRangeMul: 0.5, cautionTrail: 18, waypointMax: 11, burnSpeed: 30,
+    ...NOT_SMART,
+  },
   normal: {
     botCount: CONFIG.BOT_COUNT, botTurnRate: CONFIG.TURN_BOT, huntRangeMul: 1,
     cautionTrail: 25, waypointMax: 15, burnSpeed: CONFIG.BURN_SPEED,
+    ...NOT_SMART,
   },
-  hard: { botCount: 14, botTurnRate: 6, huntRangeMul: 1.6, cautionTrail: 34, waypointMax: 20, burnSpeed: 55 },
+  hard: {
+    botCount: 14, botTurnRate: 6, huntRangeMul: 1.6, cautionTrail: 34, waypointMax: 20, burnSpeed: 55,
+    smartHunt: true, huntRadius: 25, packSize: 3, raidChance: 0.25, safeReturn: true, loopScale: 1.35,
+  },
 };

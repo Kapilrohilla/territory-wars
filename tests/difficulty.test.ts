@@ -1,10 +1,12 @@
-// Run with `npm run bench`. Bots-only difficulty check (Task 8): 3 seeds × 60 s per
-// difficulty, the human parked at home. Prints average bot land % and bot self-deaths.
-import { it } from 'vitest';
+// Bots-only difficulty check (Task 8): 3 seeds × 60 s per difficulty, the human parked at
+// home. Hard bots (smarter, same speed and rules) must hold more land on average than Normal
+// bots, with no more self-deaths. Prints the numbers (`npx vitest run tests/difficulty.test.ts
+// --silent=false`).
+import { it, expect } from 'vitest';
 import { createWorld, step, pct } from '../src/sim/world';
 import { createBrains, botInputs } from '../src/sim/bots';
 import { mulberry32 } from '../src/sim/rng';
-import { DIFFICULTIES, type Difficulty } from '../src/sim/config';
+import type { Difficulty } from '../src/sim/config';
 import type { Input } from '../src/sim/types';
 
 const SEEDS = [1, 2, 3];
@@ -16,6 +18,9 @@ function run(difficulty: Difficulty, seed: number): { land: number; self: number
   const brains = createBrains(w);
   const rng = mulberry32(seed + 100);
   const home = { ...w.players[w.humanId].pos };
+  // The parked human can't be knocked out (that would freeze the world behind the revive
+  // offer); bots can still take its land.
+  w.players[w.humanId].protectedUntil = Infinity;
   let landSum = 0, samples = 0, self = 0, deaths = 0;
   for (let i = 1; i <= 60 * SECONDS; i++) {
     const inputs = new Map<number, Input>(botInputs(w, brains, rng));
@@ -34,13 +39,14 @@ function run(difficulty: Difficulty, seed: number): { land: number; self: number
       landSum += n > 0 ? s / n : 0;
       samples++;
     }
-    if (w.over) break;
+    if (w.over || w.awaitingRevive) throw new Error('the parked human went down');
   }
   return { land: landSum / samples, self, deaths };
 }
 
-it('difficulty check: bot land % and self-deaths', () => {
-  for (const d of DIFFICULTIES) {
+it('difficulty check: hard bots hold more land than normal, with no more self-deaths', () => {
+  const res: Record<string, { land: number; self: number }> = {};
+  for (const d of ['normal', 'hard'] as const) {
     let land = 0, self = 0, deaths = 0;
     const per: string[] = [];
     for (const seed of SEEDS) {
@@ -48,6 +54,9 @@ it('difficulty check: bot land % and self-deaths', () => {
       land += r.land; self += r.self; deaths += r.deaths;
       per.push(`s${seed}: ${r.land.toFixed(2)}% self ${r.self} deaths ${r.deaths}`);
     }
+    res[d] = { land: land / SEEDS.length, self };
     console.log(`${d.padEnd(6)} avg bot land ${(land / SEEDS.length).toFixed(3)}%  self-deaths ${self}  all deaths ${deaths}  [${per.join('; ')}]`);
   }
-}, 120_000);
+  expect(res.hard.land).toBeGreaterThan(res.normal.land);
+  expect(res.hard.self).toBeLessThanOrEqual(res.normal.self);
+}, 60_000);
